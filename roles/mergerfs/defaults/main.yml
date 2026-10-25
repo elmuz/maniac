@@ -13,8 +13,11 @@ mergerfs_deb_release: "{{ mergerfs_deb_distro }}-{{ ansible_facts['distribution_
 mergerfs_deb_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] | default(ansible_facts['architecture']) }}"
 mergerfs_deb_file: "mergerfs_{{ mergerfs_version }}.{{ mergerfs_deb_release }}_{{ mergerfs_deb_arch }}.deb"
 mergerfs_deb_url: "https://github.com/trapexit/mergerfs/releases/download/{{ mergerfs_version }}/{{ mergerfs_deb_file }}"
-mergerfs_deb_dir: /var/cache/apt/archives
-mergerfs_deb_path: "{{ mergerfs_deb_dir }}/{{ mergerfs_deb_file }}"
+# The pinned .deb is downloaded to a temporary path, verified against the
+# checksum below and removed after installation. Nothing is kept on disk, so
+# apt's cache maintenance cannot delete it between the download and install.
+mergerfs_deb_tmp_dir: /var/tmp
+mergerfs_deb_tmp_path: "{{ mergerfs_deb_tmp_dir }}/{{ mergerfs_deb_file }}"
 
 # Checksums of the known release artifacts. Platforms without an entry are
 # installed without checksum verification (HTTPS only), so prefer adding one.
