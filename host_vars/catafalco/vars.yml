@@ -308,7 +308,13 @@ snapraid_runner_smtp_port: "{{ email_smtp_port }}"
 snapraid_runner_healthchecks_io_uuid: 92955207-2df3-4978-a1c6-4dcde12190e1
 snapraid_healthchecks_io_host: "{{ healthchecks_dashboard_url }}"
 
-snapraid_deletethreshold: -1
+# Refuse a sync that would delete more than this many files. With -1 the guard
+# was disabled, so an accidental rm, a failed restore or a missing mount was
+# written straight into parity. If a run legitimately exceeds the threshold,
+# inspect `snapraid diff` first and run once with --ignore-deletethreshold;
+# do not disable the guard permanently (the remaining churn source is the
+# InfluxDB store backup, see docs/storage-review.md).
+snapraid_deletethreshold: 10000
 
 snapraid_runner_use_ssl: true
 
