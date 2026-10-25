@@ -1,0 +1,30 @@
+---
+- name: Deploy the storage preflight guard
+  ansible.builtin.template:
+    src: storage-preflight.j2
+    dest: "{{ storage_preflight_script }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+# A branch that is mounted but absent from the union cannot be detected from
+# the union alone. Each branch carries a hidden marker (SnapRAID runs with
+# `nohidden`, so the markers never enter parity) and the guard requires it to
+# be visible through every union that is supposed to contain that branch.
+- name: Create marker files on the mergerfs cache branches
+  ansible.builtin.copy:
+    dest: "{{ mounts_root_location }}/cache{{ item.cache_disk_id }}/.branch-cache{{ item.cache_disk_id }}"
+    content: "storage-preflight marker for cache{{ item.cache_disk_id }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ cache_disks | default([]) }}"
+
+- name: Create marker files on the mergerfs data branches
+  ansible.builtin.copy:
+    dest: "{{ mounts_root_location }}/data{{ item.data_disk_id }}/.branch-data{{ item.data_disk_id }}"
+    content: "storage-preflight marker for data{{ item.data_disk_id }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ data_disks | default([]) }}"

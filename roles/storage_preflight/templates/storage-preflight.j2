@@ -1,0 +1,196 @@
+#!/usr/bin/python3
+"""Fail-closed storage preflight guard.
+
+Runs before jobs that move or mirror data (mergerfs-uncache, rclone and the
+SnapRAID runner). It exits non-zero when an expected mount, mergerfs branch or
+source path is missing, so "not visible" is never interpreted as "deleted".
+
+The guard deliberately checks the individual mergerfs branches, not just the
+union: a union mounted from `/mnt/cache*:/mnt/data*` can come up without one of
+its branches, and a branch mount point that is not mounted still exists as a
+plain directory on the root filesystem.
+"""
+# {{ ansible_managed }}
+import argparse
+import os
+import subprocess
+import sys
+import syslog
+import urllib.request
+
+# Mounts that must be real mount points before any data-moving job runs.
+EXPECTED_MOUNTS = [
+{% for disk in cache_disks | default([]) %}
+    "{{ mounts_root_location }}/cache{{ disk.cache_disk_id }}",
+{% endfor %}
+{% for disk in data_disks | default([]) %}
+    "{{ mounts_root_location }}/data{{ disk.data_disk_id }}",
+{% endfor %}
+{% for disk in parity_disks | default([]) %}
+    "{{ mounts_root_location }}/parity{{ disk.parity_disk_id }}",
+{% endfor %}
+{% for disk in snapraid_data_disks | default([]) if disk.content | default(false) %}
+    "{{ mounts_snapraid_content_path }}/disk{{ disk.data_disk_id }}",
+{% endfor %}
+]
+
+# Union mounts and the filesystem type they must expose.
+UNIONS = [
+    ("{{ mergerfs_root }}", "fuse.mergerfs"),
+    ("{{ mergerfs_root }}_slow", "fuse.mergerfs"),
+    ("{{ cache_root }}", "fuse.mergerfs"),
+]
+
+# (union, branch, marker). The marker lives on the branch root and must be
+# visible through every union that is supposed to include that branch.
+BRANCH_MARKERS = [
+{% for disk in cache_disks | default([]) %}
+    ("{{ mergerfs_root }}", "{{ mounts_root_location }}/cache{{ disk.cache_disk_id }}", ".branch-cache{{ disk.cache_disk_id }}"),
+    ("{{ cache_root }}", "{{ mounts_root_location }}/cache{{ disk.cache_disk_id }}", ".branch-cache{{ disk.cache_disk_id }}"),
+{% endfor %}
+{% for disk in data_disks | default([]) %}
+    ("{{ mergerfs_root }}", "{{ mounts_root_location }}/data{{ disk.data_disk_id }}", ".branch-data{{ disk.data_disk_id }}"),
+    ("{{ mergerfs_root }}_slow", "{{ mounts_root_location }}/data{{ disk.data_disk_id }}", ".branch-data{{ disk.data_disk_id }}"),
+{% endfor %}
+]
+
+
+def log(level, message):
+    """Write to syslog and stderr (cron mails/redirects stderr)."""
+    syslog.syslog(level, message)
+    print(message, file=sys.stderr if level >= syslog.LOG_WARNING else sys.stdout)
+
+
+def ping(healthchecks_url, suffix=""):
+    """Best-effort Healthchecks ping; a failure here must not mask the check."""
+    if not healthchecks_url:
+        return
+    url = healthchecks_url.rstrip("/") + suffix
+    try:
+        urllib.request.urlopen(url, timeout=5)
+    except Exception as exc:  # noqa: BLE001 - never fail because of a ping
+        log(syslog.LOG_ERR, f"storage preflight: failed to ping {url}: {exc}")
+
+
+def mount_fstype(path):
+    """Return the fstype when *path* itself is a mount point, else None."""
+    try:
+        result = subprocess.run(
+            [
+                "findmnt",
+                "--noheadings",
+                "--output",
+                "TARGET,FSTYPE",
+                "--mountpoint",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        return None
+
+    fields = lines[0].split()
+    if len(fields) < 2:
+        return None
+
+    target, fstype = fields[0], fields[1]
+    # findmnt -M already matches the exact mount point; re-check the resolved
+    # path so a stale symlink cannot make a different mount look valid.
+    if os.path.realpath(target) != os.path.realpath(path):
+        return None
+    return fstype
+
+
+def check_mounts():
+    errors = []
+
+    for path in EXPECTED_MOUNTS:
+        if mount_fstype(path) is None:
+            errors.append(f"{path}: not a mount point")
+
+    for path, expected_fstype in UNIONS:
+        actual_fstype = mount_fstype(path)
+        if actual_fstype is None:
+            errors.append(f"{path}: not a mount point")
+        elif actual_fstype != expected_fstype:
+            errors.append(
+                f"{path}: expected filesystem {expected_fstype}, found {actual_fstype}"
+            )
+
+    for union, branch, marker in BRANCH_MARKERS:
+        branch_marker = os.path.join(branch, marker)
+        union_marker = os.path.join(union, marker)
+        if not os.path.isfile(branch_marker):
+            errors.append(f"{branch_marker}: branch marker missing")
+        if not os.path.isfile(union_marker):
+            errors.append(f"{union_marker}: branch {branch} is not visible in {union}")
+
+    return errors
+
+
+def check_sources(sources):
+    errors = []
+
+    for source in sources:
+        if not os.path.isdir(source):
+            errors.append(f"{source}: source directory does not exist")
+            continue
+        try:
+            entries = os.listdir(source)
+        except OSError as exc:
+            errors.append(f"{source}: cannot list source directory: {exc}")
+            continue
+        if not entries:
+            errors.append(f"{source}: source directory is empty")
+
+    return errors
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fail-closed storage preflight guard: verify every expected mount, "
+            "mergerfs branch and source path before a data-moving job runs."
+        )
+    )
+    parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help=(
+            "Local directory that must exist and be non-empty. Repeat for "
+            "multiple sources. For a julia -> catafalco sync pass the local "
+            "destination, so the guard still verifies the local pool."
+        ),
+    )
+    parser.add_argument(
+        "--healthchecks-url",
+        default="",
+        help="Optional Healthchecks ping URL; /fail is pinged when a check fails.",
+    )
+    args = parser.parse_args()
+
+    errors = check_mounts() + check_sources(args.source)
+    if errors:
+        for error in errors:
+            log(syslog.LOG_ERR, f"storage preflight: {error}")
+        ping(args.healthchecks_url, "/fail")
+        return 1
+
+    log(
+        syslog.LOG_INFO,
+        "storage preflight: all expected mounts, branches and sources are present",
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

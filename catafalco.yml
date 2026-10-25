@@ -55,6 +55,19 @@
         - mounts
       when: enable_nas_stuff | default(false)
 
+    # Runs after the mounts so the branch markers are created on the real
+    # filesystems. The extra tags make it run whenever a role that consumes
+    # the guard is selected on its own.
+    - role: storage_preflight
+      tags:
+        - storage-preflight
+        - mergerfs
+        - mounts
+        - snapraid
+        - rclone
+        - backup-sync
+      when: enable_nas_stuff | default(false)
+
     - role: hd_idle
       become: true
       tags:
