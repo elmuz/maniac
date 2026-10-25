@@ -20,11 +20,12 @@
     minute: "{{ item.mm }}"
     hour: "{{ item.HH }}"
     job: >
-      /usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
+      /usr/bin/flock {{ storage_maintenance_lock_file }} /bin/sh -c
+      '/usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }} &&
       /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**'
       --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
-      https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}
+      https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}'
   with_items:
     - src: julia:doc-alessio
       dst: "{{ mergerfs_root }}/Documents/alessio"
@@ -59,11 +60,12 @@
     hour: "{{ item.HH }}"
     weekday: "{{ item.weekday }}"
     job: >
-      /usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
+      /usr/bin/flock {{ storage_maintenance_lock_file }} /bin/sh -c
+      '/usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }} &&
       /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**'
       --exclude '/Transcodes/**' --exclude '/Books/**' --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
-      https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}
+      https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}'
   with_items:
     - src: "{{ mergerfs_root }}/Media"
       dst: julia:media-catafalco
@@ -80,11 +82,12 @@
     minute: "{{ item.mm }}"
     hour: "{{ item.HH }}"
     job: >
-      /usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
+      /usr/bin/flock {{ storage_maintenance_lock_file }} /bin/sh -c
+      '/usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }} &&
       /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**'
       --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
-      https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}
+      https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}'
   with_items:
     - src: "{{ mergerfs_root }}/docker-volumes-backup"
       dst: julia:catafalco/containers

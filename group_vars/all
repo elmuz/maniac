@@ -38,3 +38,7 @@ nord_colors:
   color13: "{{ nord_color_palette[15] }}"
   color14: "{{ nord_color_palette[7] }}"
   color15: "{{ nord_color_palette[6] }}"
+
+# Shared by the storage maintenance jobs (uncache, rclone, SnapRAID runner):
+# they all take this lock so two data-moving jobs cannot overlap.
+storage_maintenance_lock_file: /run/lock/storage-maintenance.lock

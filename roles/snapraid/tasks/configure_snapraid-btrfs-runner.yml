@@ -42,7 +42,7 @@
       # Refuse to diff/sync when a data, parity or content mount is missing:
       # SnapRAID would see the files as removed and write that into parity.
       ExecStartPre=/usr/local/sbin/storage-preflight --healthchecks-url {{ snapraid_healthchecks_io_host }}/ping/{{ snapraid_runner_healthchecks_io_uuid }}
-      ExecStart=/usr/bin/python3 {{ snapraid_btrfs_runner_dir }}/snapraid-btrfs-runner.py \
+      ExecStart=/usr/bin/flock {{ storage_maintenance_lock_file }} /usr/bin/python3 {{ snapraid_btrfs_runner_dir }}/snapraid-btrfs-runner.py \
         -c {{ snapraid_btrfs_runner_dir }}/snapraid-btrfs-runner.conf
     owner: root
     group: root

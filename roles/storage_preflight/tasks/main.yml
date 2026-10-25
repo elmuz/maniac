@@ -7,6 +7,19 @@
     group: root
     mode: "0755"
 
+# rclone jobs run as the admin user while the SnapRAID runner runs as root, so
+# the lock file must be openable by both. /run/lock is ephemeral, hence the
+# explicit creation here instead of relying on whichever job runs first.
+- name: Create the shared storage maintenance lock file
+  ansible.builtin.file:
+    path: "{{ storage_maintenance_lock_file }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0666"
+    access_time: preserve
+    modification_time: preserve
+
 # A branch that is mounted but absent from the union cannot be detected from
 # the union alone. Each branch carries a hidden marker (SnapRAID runs with
 # `nohidden`, so the markers never enter parity) and the guard requires it to

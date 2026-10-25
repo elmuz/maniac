@@ -3,7 +3,3 @@
 # It refuses to run when an expected mount, mergerfs branch or source path is
 # missing, so a missing mount is never interpreted as "the files were deleted".
 storage_preflight_script: /usr/local/sbin/storage-preflight
-
-# Single lock shared by the storage maintenance jobs (uncache, rclone and the
-# SnapRAID runner). It prevents two data-moving jobs from overlapping.
-storage_preflight_lock_file: /run/lock/storage-maintenance.lock

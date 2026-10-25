@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import argparse
+import os
 import shutil
 import subprocess
 import socket
@@ -8,6 +9,16 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import List
+
+
+def ping_failure(healthchecks_url: str) -> None:
+    """Best-effort Healthchecks /fail ping; never masks the real error."""
+    if not healthchecks_url:
+        return
+    try:
+        urllib.request.urlopen(healthchecks_url.rstrip("/") + "/fail", timeout=3)
+    except (socket.error, OSError):
+        pass
 
 if __name__ == "__main__":
     """
@@ -72,6 +83,13 @@ if __name__ == "__main__":
         default=list(),
     )
     parser.add_argument(
+        "--min-age-hours",
+        dest="min_age_hours",
+        type=float,
+        default=24.0,
+        help="Skip files modified or accessed within this many hours (default: 24).",
+    )
+    parser.add_argument(
         "--healthchecks-url",
         dest="hc_url",
         type=str,
@@ -84,13 +102,25 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Some general checks
+    # Some general checks. The mount checks matter: an unmounted mount point
+    # still exists as a directory on the root filesystem, so a plain is_dir()
+    # check would happily copy data there and --remove-source-files would then
+    # delete it from the cache.
     cache_path: Path = args.source
     if not cache_path.is_dir():
         raise NotADirectoryError(f"{cache_path} is not a valid directory.")
+    if not os.path.ismount(cache_path):
+        raise NotADirectoryError(f"{cache_path} is not a mount point.")
     slow_path: Path = args.destination
     if not slow_path.is_dir():
         raise NotADirectoryError(f"{slow_path} is not a valid directory.")
+    if not os.path.ismount(slow_path):
+        raise NotADirectoryError(f"{slow_path} is not a mount point.")
+
+    if args.min_age_hours < 0:
+        raise ValueError(
+            f"Minimum age must be non-negative. Found {args.min_age_hours} instead."
+        )
 
     excluded_paths: List[str] = args.exclude
 
@@ -132,11 +162,27 @@ if __name__ == "__main__":
                 syslog.syslog(syslog.LOG_ERR, f"Failed to open {args.hc_url}.")
         exit(0)
 
-    syslog.syslog(syslog.LOG_INFO, "Computing candidates...")
-    candidates = sorted(
-        [(c, c.stat()) for c in cache_path.glob("**/*") if c.is_file()],
-        key=lambda p: p[1].st_atime,
+    min_age_seconds = args.min_age_hours * 3600
+    syslog.syslog(
+        syslog.LOG_INFO,
+        f"Computing candidates (skipping files touched in the last {args.min_age_hours:g} h)...",
     )
+    now = time.time()
+    candidates = []
+    for candidate in cache_path.glob("**/*"):
+        try:
+            if not candidate.is_file():
+                continue
+            candidate_stat = candidate.stat()
+        except OSError as exc:
+            syslog.syslog(syslog.LOG_WARNING, f"Cannot stat {candidate}: {exc}")
+            continue
+        # Do not move a file that a downloader is still writing or seeding:
+        # --remove-source-files would pull the path out from under it.
+        if now - max(candidate_stat.st_mtime, candidate_stat.st_atime) < min_age_seconds:
+            continue
+        candidates.append((candidate, candidate_stat))
+    candidates.sort(key=lambda p: p[1].st_atime)
 
     t_start = time.monotonic()
     syslog.syslog(syslog.LOG_INFO, "Processing candidates...")
@@ -176,7 +222,7 @@ if __name__ == "__main__":
         # -R, --relative              use relative path names
         # --preallocate               allocate dest files before writing them
         # --remove-source-files       sender removes synchronized files (non-dirs)
-        subprocess.call(
+        result = subprocess.run(
             [
                 "rsync",
                 "-axqHAXWESR",
@@ -184,8 +230,16 @@ if __name__ == "__main__":
                 "--remove-source-files",
                 f"{cache_path}/./{c_path.relative_to(cache_path)}",
                 f"{slow_path}/",
-            ]
+            ],
+            check=False,
         )
+        if result.returncode != 0:
+            syslog.syslog(
+                syslog.LOG_ERR,
+                f"rsync failed for {c_path} with exit code {result.returncode}. Aborting.",
+            )
+            ping_failure(args.hc_url)
+            raise SystemExit(result.returncode)
         cache_used -= c_stat.st_size
 
         # Evaluate early breaking conditions
