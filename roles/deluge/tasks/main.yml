@@ -49,7 +49,10 @@
       NAME_SERVERS: 9.9.9.9,149.112.112.112
       DELUGE_DAEMON_LOG_LEVEL: info
       DELUGE_WEB_LOG_LEVEL: info
-      DEBUG: "true"
+      # binhex image: when true the VPN watchdog-script logs every 30s check
+      # (iptables, VPN/Deluge IP, DNS) as `[debug]`, ~15-20k lines/day.
+      # Enable ad hoc (recreate the container) only when debugging VPN leaks.
+      DEBUG: "false"
       # The image's healthcheck greps for an openvpn|wg *process*, but kernel
       # WireGuard has no long-running daemon. Check the interface and web UI.
       # ENABLE_HEALTHCHECK must be 'yes', otherwise healthcheck.sh exits 0
@@ -66,6 +69,12 @@
       - "{{ mergerfs_root }}/Downloads:/home/nobody/Downloads"
       - /etc/localtime:/etc/localtime:ro
     restart_policy: unless-stopped
+    # No daemon-level log rotation is configured, so bound the json-file log
+    # here; otherwise a chatty container grows /var/lib/docker unbounded.
+    log_driver: json-file
+    log_options:
+      max-size: 10M
+      max-file: "4"
     healthcheck:
       test: ["CMD", "/usr/local/bin/system/scripts/docker/healthcheck.sh"]
       interval: 5m
