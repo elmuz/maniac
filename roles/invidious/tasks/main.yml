@@ -1,8 +1,19 @@
 ---
+- name: Create the necessary Invidious folders
+  ansible.builtin.file:
+    path: "{{ docker_dir }}/{{ invidious_container_name }}/{{ item }}"
+    state: directory
+    owner: "{{ guid }}"
+    group: "{{ guid }}"
+    mode: "0755"
+  loop:
+    - db/sql
+    - db/data
+
 - name: Copy the necessary invidous-db files (1)
   copy:
-    src: sql
-    dest: "{{ docker_dir }}/{{ invidious_container_name }}/db/sql"
+    src: sql/
+    dest: "{{ docker_dir }}/{{ invidious_container_name }}/db/sql/"
     owner: "{{ guid }}"
     group: "{{ guid }}"
     mode: "0755"
@@ -34,6 +45,7 @@
     restart_policy: unless-stopped
     volumes:
       - "{{ docker_dir }}/{{ invidious_container_name }}/db/sql:/config/sql"
+      - "{{ docker_dir }}/{{ invidious_container_name }}/db/data:/var/lib/postgresql/data"
       - "{{ docker_dir }}/{{ invidious_container_name }}/db/init-invidious-db.sh:/docker-entrypoint-initdb.d/init-invidious-db.sh"
     healthcheck:
       test: [CMD-SHELL, pg_isready -U funkysloth -d invidious]
@@ -117,3 +129,13 @@
     owner: "{{ guid }}"
     group: "{{ guid }}"
     mode: "0644"
+
+- name: Setup backup cron job
+  ansible.builtin.include_tasks: tasks/backup_service.yml
+  vars:
+    service_name: "{{ invidious_container_name }}"
+    cron_schedule: "0 5 * * *"
+    backup_cli_args:
+      source_paths: "{{ docker_dir }}/{{ invidious_container_name }}"
+      destination_path: "{{ mergerfs_root }}/docker-volumes-backup"
+      container_names_str: "{{ invidious_container_name }}-db"

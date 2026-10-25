@@ -50,7 +50,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 - `/mnt/storage` is a mergerFS pool (cache + data branches); `/mnt/cache1` is a single NVMe at 68% usage.
 - `/mnt/storage/docker-volumes-backup` is on the same mergerFS pool as the source data.
 - `swag` and `grafana` are running but have no backup jobs.
-- `invidious-db` has no data volume; `/srv/invidious/db` contains only the SQL init scripts.
+- ~~`invidious-db` has no data volume~~; fixed by B-01 (`/srv/invidious/db/data`).
 - Immich uploads are configured outside `/srv` at `/mnt/storage/docker-volumes-cache/immich/upload/`.
 - `/srv/immich/backup/latest.sql.gz` exists (about 275 MB) and is the only dump kept.
 - `/srv/grafana/data/grafana.db` exists (about 3.7 MB) and is not backed up.
@@ -71,6 +71,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 | `handbrake` | `/srv/handbrake` config | monthly, 4th at 05:00 |
 | `healthchecks` | `/srv/healthchecks/config` SQLite | daily 04:00 |
 | `homer` | `/srv/homer` YAML | daily 05:00 |
+| `invidious` | `/srv/invidious/db/data` Postgres | daily 05:00 (B-01) |
 | `jellyfin` | `/srv/jellyfin` config/metadata | daily 05:00 |
 | `lazylibrarian` | `/srv/lazylibrarian` config | daily 05:00 |
 | `lidarr` | `/srv/lidarr` config | daily 05:00 |
@@ -96,7 +97,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 |---|---|---|
 | `grafana` | `/srv/grafana/data/grafana.db`, plugins, exports | Users, API keys, annotations, alert rules, dashboard versions. Provisioned dashboards are reproducible; user-created content is not. |
 | `swag` | `/srv/swag/{nginx,letsencrypt,dns-conf,fail2ban}` | TLS certificates/account keys, nginx base config, fail2ban DB, DNS credentials. Mostly reproducible, but reissuing certs and rebuilding nginx state is avoidable pain. |
-| `invidious` | Postgres database, currently in the container writable layer | No `/var/lib/postgresql/data` volume at all. Any container recreation or Watchtower update loses users, subscriptions, playlists. No backup job. |
+| ~~`invidious`~~ | ~~Postgres database, currently in the container writable layer~~ | Resolved by B-01: `/srv/invidious/db/data` is now the Postgres volume and a daily `generic_backup.sh` job exists. |
 | `stirling-pdf` | `/srv/stirling-pdf/{extraConfigs,trainingData}` | Settings/fonts; low value but still stateful. No backup job. |
 
 ### 3.4 Stateless / regenerable
@@ -109,8 +110,9 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 
 ### P0 — data loss or operational hazards
 
-- **B-P0-1: Invidious DB is not persisted.**
-  `roles/invidious/tasks/main.yml:35-37` mounts only `db/sql` and the init script. There is no volume for `/var/lib/postgresql/data`. Watchtower or any playbook run with `pull: true` can recreate the container and silently lose the database.
+- **B-P0-1: Invidious DB is not persisted.** — **RESOLVED (B-01).**
+  ~~`roles/invidious/tasks/main.yml:35-37` mounts only `db/sql` and the init script. There is no volume for `/var/lib/postgresql/data`. Watchtower or any playbook run with `pull: true` can recreate the container and silently lose the database.~~
+  The role now creates `db/data`, mounts it at `/var/lib/postgresql/data`, copies the schema into `db/sql/` (previously it nested into `db/sql/sql`, so the init script could not find it), and installs a daily backup job that stops `invidious-db`.
 
 - **B-P0-2: Immich uploads are outside the backup and on the wrong disk.**
   `roles/immich/templates/.env.j2:4` sets `UPLOAD_LOCATION="{{ mergerfs_root }}/docker-volumes-cache/immich/upload/"`. The generic backup only copies `/srv/immich`, so photos are never copied to Julia. With `category.create=lfs` and the uncache job excluding `{{ cache_root }}/docker-volumes-cache`, new uploads stay on the single cache NVMe, which has no SnapRAID parity.
@@ -176,8 +178,16 @@ The existing `roles/restic` already provides the repository/config/retention pat
 
 ### Phase 0 — stop the bleeding (target: this week)
 
-- [ ] **B-01 — Persist and back up the Invidious DB.**
-  - Dump the current DB before changing the container:
+- [x] **B-01 — Persist and back up the Invidious DB.**
+  > **Implemented 2026-10-25 (deploy + live verification pending).** The service is not in use, so the pre-migration dump was
+  > intentionally skipped (there is no data worth preserving). The role now creates
+  > `/srv/invidious/db/data`, mounts it at `/var/lib/postgresql/data`, copies the SQL
+  > schema into `/srv/invidious/db/sql/` (fixing the pre-existing `sql/sql` nesting that
+  > prevented initialisation), and adds the standard daily `backup_service.yml` job that
+  > stops `invidious-db`. Deploy with `ansible-playbook catafalco.yml -K --tags invidious`,
+  > then verify the cluster appears under `/srv/invidious/db/data` and survives a
+  > `docker rm -f invidious-db` + playbook run.
+  - Dump the current DB before changing the container (not needed here — service unused):
     ```sh
     docker exec -t invidious-db pg_dump -U funkysloth -d invidious -Fc \
       > /srv/invidious/db/pre-volume-migration.dump
@@ -325,9 +335,13 @@ The existing `roles/restic` already provides the repository/config/retention pat
 
 ### Invidious volume migration
 
-Adding the data volume changes the container. Do not recreate it before dumping the current database. If the dump is missing or unverified, stop and take a second copy before proceeding.
+**Prepared in B-01.** Invidious is not in use, so no dump/restore is required: the container
+can be recreated directly against the new `/srv/invidious/db/data` volume. The image initialises
+a fresh cluster and the init script loads the schema from `/config/sql`.
 
-After adding the volume, the new Postgres cluster is initialised by the image. Restore the dump with `pg_restore` against the `invidious` database, then verify a known user/subscription. Keep the old container or the dump until the new volume has been verified for at least one week.
+If this ever has to be repeated on a used instance, dump first with
+`docker exec -t invidious-db pg_dump -U funkysloth -d invidious -Fc > /srv/invidious/db/pre-volume-migration.dump`,
+then restore with `pg_restore` after the new volume exists.
 
 ### Immich upload migration
 
