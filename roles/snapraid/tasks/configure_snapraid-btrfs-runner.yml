@@ -47,6 +47,8 @@
     owner: root
     group: root
     mode: "0644"
+  notify:
+    - Reload systemd
 
 - name: Create snapraid-btrfs-runner timer
   ansible.builtin.copy:
@@ -73,6 +75,9 @@
     name: snapraid-btrfs-runner.timer
     enabled: true
     state: started
+    # Reload every run so a service-unit change is picked up even when the
+    # unit content itself did not change in this run.
+    daemon_reload: true
 
 - name: Final verification of snapraid-btrfs
   ansible.builtin.command:
