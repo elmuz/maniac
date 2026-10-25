@@ -312,8 +312,8 @@ snapraid_healthchecks_io_host: "{{ healthchecks_dashboard_url }}"
 # was disabled, so an accidental rm, a failed restore or a missing mount was
 # written straight into parity. If a run legitimately exceeds the threshold,
 # inspect `snapraid diff` first and run once with --ignore-deletethreshold;
-# do not disable the guard permanently (the remaining churn source is the
-# InfluxDB store backup, see docs/storage-review.md).
+# do not disable the guard permanently. The InfluxDB store is no longer copied
+# by the daily service backup, which removed the largest source of churn.
 snapraid_deletethreshold: 10000
 
 snapraid_runner_use_ssl: true
@@ -354,5 +354,11 @@ mqtt_users:
     password: "{{ tasmota_mqtt_password }}"
   - user: telegraf
     password: "{{ telegraf_mqtt_password }}"
+
+# InfluxDB 3 Core applies the retention period only when the database is
+# created; `influxdb3 update database` cannot change it afterwards. 30 days is
+# also the disk bound for the metrics store. Changing this value requires
+# recreating the database (which deletes its data).
+influxdb_retention_period: "30d"
 
 monitoring_network: influxdb_network

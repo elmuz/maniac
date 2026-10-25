@@ -7,6 +7,9 @@
 #   - source_paths (string, mandatory): Space-separated list of source paths.
 #   - destination_path (string, mandatory): Single destination path for this service's backup.
 #   - container_names_str (string, optional): Space-separated list of container names.
+#   - exclude_paths (string, optional): Space-separated list of rsync exclude patterns,
+#     relative to each source root. Excluded paths are also removed from the
+#     destination (--delete-excluded), so a removed subtree does not linger.
 
 - name: Ensure log directory exists
   ansible.builtin.file:
@@ -36,6 +39,9 @@
       --dest "{{ backup_cli_args.destination_path }}"
       {% if backup_cli_args.container_names_str is defined and backup_cli_args.container_names_str | trim != "" %}
       --containers "{{ backup_cli_args.container_names_str }}"
+      {% endif %}
+      {% if backup_cli_args.exclude_paths is defined and backup_cli_args.exclude_paths | trim != "" %}
+      --exclude "{{ backup_cli_args.exclude_paths }}"
       {% endif %}
       >> /var/log/backups/{{ service_name }}_backup.log 2>&1
     minute: "{{ cron_schedule.split(' ')[0] }}"

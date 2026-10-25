@@ -148,22 +148,13 @@
 # so the role creates it explicitly and refuses to pretend a mismatch is fine.
 # A database that already exists with different retention can only be fixed by
 # dropping it, which is destructive -- that stays a deliberate operator action.
-- name: Read the retention of the database
-  ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - "{{ influxdb_container_name }}"
-      - influxdb3
-      - show
-      - retention
-      - --database
-      - "{{ influxdb_database_name }}"
-  register: influxdb_retention_before
-  changed_when: false
-  failed_when: false
-  when: influxdb_verify_persistence | bool
-
+#
+# Create unconditionally instead of using `show retention` as an existence test:
+# for a missing database that command exits 0 and prints an empty table, so the
+# old `rc != 0` guard skipped creation after a hard delete and let Telegraf
+# recreate the database implicitly with infinite retention. An existing database
+# makes this command fail with "already exists", which is ignored; the
+# assertion below is the real check.
 - name: Create the database with the configured retention
   ansible.builtin.command:
     argv:
@@ -181,9 +172,7 @@
   # A writer (Telegraf) may create the database implicitly before this runs; the
   # assertion below is what decides whether the result is acceptable.
   failed_when: false
-  when:
-    - influxdb_verify_persistence | bool
-    - influxdb_retention_before.rc | default(1) != 0
+  when: influxdb_verify_persistence | bool
 
 - name: Read the effective retention of the database
   ansible.builtin.command:
@@ -208,11 +197,13 @@
 
 # Deliberately not a string comparison of the configured period: the CLI renders
 # durations its own way ("90d", "90 days", ...). What must never pass silently is
-# a database that keeps data forever while a finite window is configured.
+# an empty result (database missing) or a database that keeps data forever while
+# a finite window is configured.
 - name: Assert that the database applies the configured retention
   ansible.builtin.assert:
     that:
       - influxdb_retention_state.rc | default(1) == 0
+      - influxdb_database_name in (influxdb_retention_state.stdout | default(''))
       - not (influxdb_retention_configured_finite | bool)
         or ((influxdb_retention_state.stdout | default('')) | lower
             | regex_search('none|infinite|never|forever') is none)
@@ -314,6 +305,13 @@
 #   --read-annotations --write-annotations --read-sources --write-sources --read-scrapers --write-scrapers --read-notebooks --write-notebooks --read-remotes
 #   --write-remotes --read-replications --write-replications
 
+# Back up the configuration only. The store below influxdb_store_host_dir is
+# excluded (see influxdb_backup_exclude_paths): copying the live db/WAL/parquet
+# tree every day was expensive, generated most of the SnapRAID churn, and the
+# data is explicitly not considered important. The container is not stopped any
+# more either: nothing that is actually backed up lives in it, so a daily stop
+# only created a gap in the metrics. `--delete-excluded` in generic_backup.sh
+# removes the store copy left by previous runs.
 - name: Setup backup cron job
   ansible.builtin.include_tasks: tasks/backup_service.yml
   vars:
@@ -322,4 +320,4 @@
     backup_cli_args:
       source_paths: "{{ docker_dir }}/{{ influxdb_container_name }}"
       destination_path: "{{ mergerfs_root }}/docker-volumes-backup"
-      container_names_str: "{{ influxdb_container_name }}"
+      exclude_paths: "{{ influxdb_backup_exclude_paths }}"

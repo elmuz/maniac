@@ -29,6 +29,12 @@ influxdb_container_data_dir: "{{ influxdb_container_root }}/data"
 influxdb_database_name: system-monitor
 influxdb_retention_period: "90d"
 influxdb_store_host_dir: "{{ docker_dir }}/{{ influxdb_container_name }}/db"
+# The metrics store is not service configuration: it is large (~8-9 GB at the
+# 90-day retention window), regenerable monitoring data. A daily rsync of the
+# live store was the main source of SnapRAID churn and mass-deletion diffs, so
+# the service backup excludes it and keeps only the configuration (admin token,
+# Explorer state, plugins). Pattern is relative to the service directory.
+influxdb_backup_exclude_paths: "/{{ influxdb_store_host_dir | basename }}/"
 # Fail the play if the store does not live on the bind mount. The check looks
 # for files created by the container inside the host directory after it starts.
 influxdb_verify_persistence: true

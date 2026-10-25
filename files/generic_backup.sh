@@ -24,6 +24,7 @@ log_error() {
 
 CONTAINER_NAMES=()
 SOURCE_PATHS=()
+EXCLUDE_PATTERNS=()
 DESTINATION_PATH=""
 
 # --- Simple Argument Parsing ---
@@ -45,6 +46,11 @@ while [[ $# -gt 0 ]]; do
         shift # past argument
         shift # past value
         ;;
+        --exclude)
+        if [[ -n "$2" ]]; then IFS=' ' read -r -a EXCLUDE_PATTERNS <<< "$2"; fi
+        shift # past argument
+        shift # past value
+        ;;
         *)    # unknown option
         log_error "Unknown option: $1"
         exit 1
@@ -53,9 +59,22 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [ ${#SOURCE_PATHS[@]} -eq 0 ] || [ -z "$DESTINATION_PATH" ]; then
-    log_error "Usage: $0 --sources \"/src1 /src2\" --dest /path/to/dest [--containers \"container1 container2\"]"
+    log_error "Usage: $0 --sources \"/src1 /src2\" --dest /path/to/dest [--containers \"container1 container2\"] [--exclude \"/pattern1 /pattern2\"]"
     log_error "--sources and --dest are mandatory."
     exit 1
+fi
+
+# Exclusions are rsync patterns relative to each source root. When at least one
+# is given, --delete-excluded also removes already-copied excluded paths from
+# the destination. That is deliberate: a subtree that has been removed from the
+# backup scope (for example the InfluxDB metrics store) must not linger there
+# forever and keep being mirrored offsite.
+RSYNC_OPTS=(-avh --delete)
+if [ ${#EXCLUDE_PATTERNS[@]} -gt 0 ]; then
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        RSYNC_OPTS+=(--exclude "$pattern")
+    done
+    RSYNC_OPTS+=(--delete-excluded)
 fi
 
 log_message "----------------------------------------------------" # Separators will also be timestamped
@@ -64,6 +83,9 @@ log_message "Sources: ${SOURCE_PATHS[*]}"
 log_message "Destination: $DESTINATION_PATH"
 if [ ${#CONTAINER_NAMES[@]} -gt 0 ]; then
     log_message "Containers: ${CONTAINER_NAMES[*]}"
+fi
+if [ ${#EXCLUDE_PATTERNS[@]} -gt 0 ]; then
+    log_message "Excluded patterns: ${EXCLUDE_PATTERNS[*]}"
 fi
 log_message "----------------------------------------------------"
 
@@ -92,9 +114,9 @@ for src_path in "${SOURCE_PATHS[@]}"; do
         dest_target_item="$DESTINATION_PATH/$(basename "$src_path")"
         log_message "Backing up $src_path to $dest_target_item"
         if [ -d "$src_path" ]; then
-            rsync -avh --delete "${src_path}/" "${dest_target_item}/"
+            rsync "${RSYNC_OPTS[@]}" "${src_path}/" "${dest_target_item}/"
         else # Source is a file
-            rsync -avh --delete "$src_path" "$dest_target_item"
+            rsync "${RSYNC_OPTS[@]}" "$src_path" "$dest_target_item"
         fi
     else
         log_warning "Source path $src_path does not exist. Skipping."
