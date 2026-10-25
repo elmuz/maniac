@@ -1,7 +1,7 @@
 ---
 - name: Ensure openSUSE Snapper repository key
   ansible.builtin.get_url:
-    url: https://download.opensuse.org/repositories/filesystems:snapper/{{ ansible_distribution }}_{{ ansible_distribution_major_version }}/Release.key
+    url: "https://download.opensuse.org/repositories/filesystems:snapper/{{ snapper_repo_suite }}/Release.key"
     dest: /etc/apt/trusted.gpg.d/opensuse_snapper.asc
     owner: root
     group: root
@@ -19,7 +19,7 @@
         name: opensuse_snapper
         types: deb
         uris:
-          - http://download.opensuse.org/repositories/filesystems:/snapper/{{ ansible_distribution }}_{{ ansible_distribution_major_version }}
+          - http://download.opensuse.org/repositories/filesystems:/snapper/{{ snapper_repo_suite }}
         suites: ["/"]
         components: [""]
         architectures: amd64
@@ -29,7 +29,7 @@
 #   ansible.builtin.apt_repository:
 #     repo: >-
 #       deb [signed-by={{ snapper_apt_key.dest }}]
-#       http://download.opensuse.org/repositories/filesystems:/snapper/{{ ansible_distribution }}_{{ ansible_distribution_major_version }}/ /
+#       http://download.opensuse.org/repositories/filesystems:/snapper/{{ snapper_repo_suite }}/ /
 #     filename: opensuse_snapper
 #     state: present
 

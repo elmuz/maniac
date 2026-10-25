@@ -14,7 +14,7 @@
 
 - name: Detect primary network interface
   ansible.builtin.set_fact:
-    system_primary_interface: "{{ ansible_default_ipv4.interface }}"
+    system_primary_interface: "{{ ansible_facts['default_ipv4']['interface'] }}"
 
 - name: Configure systemd-networkd for DHCP on primary interface
   ansible.builtin.template:

@@ -58,7 +58,7 @@
             - /var/lib/snap
 
 - name: Update and upgrade apt packages (Debian and Ubuntu)
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
   ansible.builtin.apt:
     upgrade: true
     autoremove: true

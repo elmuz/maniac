@@ -19,7 +19,7 @@
 - name: Ensure the directory for ZSH dotfile exists
   become: false
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/.config/zsh"
+    path: "{{ ansible_facts['env']['HOME'] }}/.config/zsh"
     state: directory
     recurse: true
     owner: "{{ ansible_user }}"
@@ -36,14 +36,14 @@
     mode: "0644"
   loop:
     - src: "files/zshrc"
-      dest: "{{ ansible_env.HOME }}/.config/zsh/.zshrc"
+      dest: "{{ ansible_facts['env']['HOME'] }}/.config/zsh/.zshrc"
     - src: "files/zshenv"
-      dest: "{{ ansible_env.HOME }}/.config/zsh/.zshenv"
+      dest: "{{ ansible_facts['env']['HOME'] }}/.config/zsh/.zshenv"
 
 - name: Create '$XDG_CACHE_HOME/zsh for 'zcompdump'
   become: false
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/.cache/zsh"
+    path: "{{ ansible_facts['env']['HOME'] }}/.cache/zsh"
     state: directory
     mode: "0755"
 

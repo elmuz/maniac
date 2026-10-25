@@ -1,2 +1,5 @@
 ---
 snapper_executable: /usr/bin/snapper
+# openSUSE repositories are named after the distribution and its major version,
+# e.g. Ubuntu_24.04 (see the filesystems:snapper repository layout).
+snapper_repo_suite: "{{ ansible_facts['distribution'] }}_{{ ansible_facts['distribution_major_version'] }}"

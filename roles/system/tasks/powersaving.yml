@@ -27,7 +27,7 @@
   block:
     - name: Install the cpupower packages
       ansible.builtin.apt:
-        name: "{{ 'linux-tools-generic' if ansible_distribution == 'Ubuntu' else 'linux-cpupower' }}"
+        name: "{{ 'linux-tools-generic' if ansible_facts['distribution'] == 'Ubuntu' else 'linux-cpupower' }}"
         state: latest
 
     - name: Install the cpupower systemd services (1)
