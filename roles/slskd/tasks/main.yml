@@ -1,4 +1,9 @@
 ---
+# These two directories are bind-mount sources. If one is missing when the
+# container starts, Docker recreates it as root:root, and slskd (which runs as
+# {{ guid }}) then fails with "directory exists, but is not writeable". Run
+# them with become so an already root-owned directory can be repaired instead
+# of only being created on a fresh host.
 - name: Create the slskd folder
   file:
     path: "{{ docker_dir }}/{{ slskd_container_name }}"
@@ -6,6 +11,7 @@
     owner: "{{ guid }}"
     group: "{{ guid }}"
     mode: "0755"
+  become: true
 
 - name: Create the slskd incomplete downloads folder
   file:
@@ -14,6 +20,7 @@
     owner: "{{ guid }}"
     group: "{{ guid }}"
     mode: "0755"
+  become: true
 
 - name: Create docker network
   ansible.builtin.include_tasks:
