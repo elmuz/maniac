@@ -34,6 +34,11 @@
       TZ: "{{ timezone }}"
       SETTINGS_ENCRYPTION_KEY: "{{ duplicati_settings_encryption_key }}"
       DUPLICATI__WEBSERVICE_PASSWORD: "{{ duplicati_webservice_password }}"
+      # Duplicati stores schedule times as UTC and only applies DST adjustments
+      # when a server timezone is configured. With an empty `server-timezone` it
+      # falls back to UTC, so scheduled backups stay pinned to a fixed UTC instant
+      # and drift by one hour after every DST change.
+      DUPLICATI__WEBSERVICE_TIMEZONE: "{{ timezone }}"
       DOCKER_MODS: linuxserver/mods:universal-package-install|linuxserver/mods:universal-cron
       INSTALL_PACKAGES: sqlite3
     volumes:
