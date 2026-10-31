@@ -11,7 +11,7 @@
 ### Goals
 
 - Protect every piece of **irreplaceable service state** (configs, databases, app metadata).
-- Protect **user data** that is not already covered by the Julia/Duplicati paths (notably Immich uploads).
+- Protect **user data** that is not already covered by the Julia/Duplicati paths.
 - Make the offsite copy **versioned, encrypted, and independently restorable**.
 - Make every backup job **observable**: it must report success, failure, and staleness.
 - Make restore a **tested procedure**, not a latent Ansible branch.
@@ -51,7 +51,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 - `/mnt/storage/docker-volumes-backup` is on the same mergerFS pool as the source data.
 - `swag` and `grafana` are running but have no backup jobs.
 - ~~`invidious-db` has no data volume~~; fixed by B-01 (`/srv/invidious/db/data`).
-- Immich uploads are configured outside `/srv` at `/mnt/storage/docker-volumes-cache/immich/upload/`.
+- Immich uploads are configured outside `/srv` at `/mnt/storage/docker-volumes-cache/immich/upload/`, but the feature is unused: Immich is a frontend for the externally managed `Pictures` tree (mounted read-only via `EXTERNAL_PATH`).
 - `/srv/immich/backup/latest.sql.gz` exists (about 275 MB) and is the only dump kept.
 - `/srv/grafana/data/grafana.db` exists (about 3.7 MB) and is not backed up.
 
@@ -88,7 +88,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 |---|---|
 | `dawarich` | DB dump at 04:50 + stop-all at 05:00. The dump overwrites `latest.sql.gz` non-atomically; a failed dump destroys the previous good copy. No dump retention. |
 | `speedtest_tracker` | MariaDB data is copied physically while the DB is stopped. No logical `mysqldump`; restore requires a compatible MariaDB version. |
-| `immich` | Postgres is dumped and copied, but the photo upload directory is outside `/srv` and is not backed up. Only `immich-postgres` is stopped; `immich-server` keeps running. |
+| `immich` | Postgres is dumped and copied; the dump has the same atomicity/retention problems as Dawarich (B-P0-5). Only `immich-postgres` is stopped; `immich-server` keeps running. `UPLOAD_LOCATION` is intentionally not backed up because uploads are unused (B-P0-2 closed). |
 | `influxdb` | Store is copied while stopped, but a full copy every day of a large time-series store is expensive and has no logical export. |
 
 ### 3.3 Stateful and not covered
@@ -114,8 +114,8 @@ The result is a **daily per-service mirror** to a local staging directory, follo
   ~~`roles/invidious/tasks/main.yml:35-37` mounts only `db/sql` and the init script. There is no volume for `/var/lib/postgresql/data`. Watchtower or any playbook run with `pull: true` can recreate the container and silently lose the database.~~
   The role now creates `db/data`, mounts it at `/var/lib/postgresql/data`, copies the schema into `db/sql/` (previously it nested into `db/sql/sql`, so the init script could not find it), and installs a daily backup job that stops `invidious-db`.
 
-- **B-P0-2: Immich uploads are outside the backup and on the wrong disk.**
-  `roles/immich/templates/.env.j2:4` sets `UPLOAD_LOCATION="{{ mergerfs_root }}/docker-volumes-cache/immich/upload/"`. The generic backup only copies `/srv/immich`, so photos are never copied to Julia. With `category.create=lfs` and the uncache job excluding `{{ cache_root }}/docker-volumes-cache`, new uploads stay on the single cache NVMe, which has no SnapRAID parity.
+- **B-P0-2: Immich uploads are outside the backup and on the wrong disk.** — **CLOSED 2026-10-26, not applicable.**
+  `roles/immich/templates/.env.j2:4` sets `UPLOAD_LOCATION="{{ mergerfs_root }}/docker-volumes-cache/immich/upload/"`, and the generic backup only copies `/srv/immich`. However, the upload feature is never used: Immich is only a frontend for the externally managed `Pictures` library (`EXTERNAL_PATH`, mounted read-only). The canonical photos live and are backed up with that tree, and any upload is treated as disposable and can be re-uploaded. No remediation is required. If uploads are ever adopted, reopen this finding and include the upload path in the offsite backup.
 
 - **B-P0-3: `generic_backup.sh` can leave containers stopped forever.**
   `files/generic_backup.sh` uses `set -eo pipefail` and has no `trap`. If `docker stop`, `rsync`, or any command fails, the script exits before the restart block. A failed backup at 05:00 can leave a service down until someone notices. There is no lock, so a long run can overlap the 08:50 rclone job.
@@ -161,7 +161,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 ```
 Postgres/MariaDB ──(pg_dump/mysqldump, online)──> /srv/<service>/backup/YYYY-MM-DD.sql.gz
 SQLite/file services ──(short stop or sqlite3 .backup)──> /srv/<service>
-/srv (configs + dumps) + Immich uploads + SWAG certs
+/srv (configs + dumps) + SWAG certs
         │
         └──(restic, encrypted, deduplicated)──> B2/S3, retention + restic check
 
@@ -203,21 +203,8 @@ The existing `roles/restic` already provides the repository/config/retention pat
   - Add a normal `backup_service.yml` job for `invidious`, stopping `invidious-db`.
   - **Done when:** `/srv/invidious/db/data` contains the Postgres cluster, a container recreate keeps the data, and the backup job exists.
 
-- [ ] **B-02 — Bring Immich uploads into the backup.**
-  - Choose one:
-    - **Preferred:** move the uploads to the data pool (`/mnt/storage_slow/immich/upload/`) so they are on SnapRAID-protected disks, then include that path in restic; or
-    - keep them on the cache SSD and explicitly include `/mnt/storage/docker-volumes-cache/immich/upload` in the offsite backup, accepting that the cache drive has no parity.
-  - Migration (preferred path):
-    ```sh
-    # Stop Immich application containers first.
-    rsync -aHAX --info=progress2 \
-      /mnt/storage/docker-volumes-cache/immich/upload/ \
-      /mnt/storage_slow/immich/upload/
-    # Update roles/immich/templates/.env.j2, redeploy Immich, verify, then
-    # remove the old directory after a retention period.
-    ```
-  - Extend the Immich backup to stop `immich-server` as well if uploads are copied with rsync, or use a filesystem snapshot.
-  - **Done when:** a restore of Immich requires only the restic snapshot + DB dump, and the upload path is documented.
+- [x] **B-02 — Bring Immich uploads into the backup.** — **CLOSED 2026-10-26: not applicable.**
+  Immich does not own the photo library. It reads the externally managed `Pictures` tree through `EXTERNAL_PATH` (read-only), which is already handled by the Julia/Duplicati paths. `UPLOAD_LOCATION` is unused and its contents are disposable; recovery only needs the Immich DB and config, both covered by the existing dump plus `generic_backup.sh`. No migration or extra restic path is needed. Reopen only if uploads become part of the real workflow.
 
 - [ ] **B-03 — Add missing backup jobs.**
   - `grafana`: daily, stop `grafana`, rsync `/srv/grafana`.
@@ -287,7 +274,7 @@ The existing `roles/restic` already provides the repository/config/retention pat
 - [ ] **B-09 — Enable restic on catafalco.**
   - Reuse `roles/restic`, but adapt `stop_services()` so it does not stop every container.
   - Repository: B2/S3, separate bucket/prefix from `nilde`.
-  - Paths: `/srv` (configs and the per-service `backup/` dumps) and the Immich upload path.
+  - Paths: `/srv` (configs and the per-service `backup/` dumps).
   - Exclude: logs, caches, `models`, `Transcodes`, and physical DB directories where a logical dump is the primary restore path.
   - Retention: e.g. `--keep-daily 7 --keep-weekly 4 --keep-monthly 12 --keep-yearly 2 --prune`.
   - Run `restic check` weekly and `restic check --read-data-subset=5%` monthly.
@@ -311,7 +298,7 @@ The existing `roles/restic` already provides the repository/config/retention pat
   - **Done when:** no two heavy jobs overlap and rclone never sees a partial backup.
 
 - [ ] **B-12 — Run a restore drill.**
-  Restore at least Grafana, Immich (DB + one photo), Sonarr, and SWAG into a scratch environment. Record the steps and timings in this document.
+  Restore at least Grafana, Immich (DB plus verification of the read-only external-library mount), Sonarr, and SWAG into a scratch environment. Record the steps and timings in this document.
   - **Done when:** the drill succeeds and the runbook is updated with any deviations.
 
 - [ ] **B-13 — Decide the `Media/Books` policy.**
@@ -343,9 +330,9 @@ If this ever has to be repeated on a used instance, dump first with
 `docker exec -t invidious-db pg_dump -U funkysloth -d invidious -Fc > /srv/invidious/db/pre-volume-migration.dump`,
 then restore with `pg_restore` after the new volume exists.
 
-### Immich upload migration
+### Immich uploads (closed)
 
-Stop `immich-server` and `immich-machine-learning` before moving the upload directory. Do not run the move while uploads are in progress. After the move, update `.env`, redeploy, upload one test photo, and verify the file appears under the new path. Keep the old directory for at least one retention period.
+No migration is planned. The upload feature is unused and `UPLOAD_LOCATION` is disposable; Immich reads the externally managed `Pictures` tree read-only. If uploads are enabled later, treat this as a new decision and add the upload path to the offsite backup.
 
 ### Database dump migration
 
@@ -361,11 +348,10 @@ Replace the old cron entries atomically: deploy the new script and remove the ol
 
 1. Rebuild the host with the same Ansible repository and vault.
 2. Restore `/srv` from restic (or the per-service staging as a fallback).
-3. Restore the Immich upload directory to the configured `UPLOAD_LOCATION`.
-4. Restore DB dumps and start databases before application containers.
-5. Start containers in dependency order (`db` → `redis` → app → sidecars).
-6. Verify health endpoints, logs, and one real user action per critical service.
-7. Record the restore date and any manual steps.
+3. Restore DB dumps and start databases before application containers.
+4. Start containers in dependency order (`db` → `redis` → app → sidecars).
+5. Verify health endpoints, logs, and one real user action per critical service.
+6. Record the restore date and any manual steps.
 
 Use the MCP remote-server tools for live checks where possible; do not rely on ad-hoc SSH commands.
 
@@ -374,7 +360,6 @@ Use the MCP remote-server tools for live checks where possible; do not rely on a
 ## 9. Open decisions
 
 - **RPO/RTO:** Is 24 h acceptable for service state, or do critical DBs need more frequent dumps?
-- **Immich uploads:** Keep on the cache SSD for speed, or move to the parity-protected data pool?
 - **Media offsite:** Is the Julia copy enough, or does Media need a second offsite copy (B2 cost)?
 - **Duplicati vs restic:** Keep Duplicati for Documents/Pictures and add restic for service state, or consolidate on restic?
 - **Downtime tolerance:** Are short per-service stops acceptable at 05:00, or should the target be fully online DB dumps with no stops?
@@ -403,6 +388,5 @@ Use the MCP remote-server tools for live checks where possible; do not rely on a
 - [ ] Healthchecks shows a recent success for every backup job.
 - [ ] A test restore of one config-only service and one DB-backed service succeeds.
 - [ ] The Invidious DB survives a container recreate.
-- [ ] The Immich upload directory is present in the restic snapshot.
 - [ ] The restore role no longer uses `delete: true` against `/srv`.
 - [ ] The vault password, restic password, and Duplicati passphrase are escrowed.
