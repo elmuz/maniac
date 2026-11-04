@@ -1,0 +1,13 @@
+#!/bin/sh
+# Vault password source for the `iac` vault id.
+# Holds no secret: the password lives only as an encrypted blob at
+# ~/.config/ansible/vault-iac.gpg, decrypted on demand by gpg-agent
+# (pinentry-program = pinentry-fuzzel) and printed on stdout.
+set -eu
+: "${HOME:?HOME must be set}"
+# This host keeps its keyring in XDG_DATA_HOME, not in ~/.gnupg, and only
+# interactive sessions get GNUPGHOME from environment.d — pin it so cron/systemd
+# callers resolve the same keyring instead of an empty ~/.gnupg.
+GNUPGHOME="${GNUPGHOME:-$HOME/.local/share/gnupg}"
+export GNUPGHOME
+exec gpg --quiet --no-tty --decrypt "$HOME/.config/ansible/vault-iac.gpg"

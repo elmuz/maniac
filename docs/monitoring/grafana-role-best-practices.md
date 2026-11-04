@@ -68,7 +68,7 @@ In all `roles/grafana/templates/*.json.j2` files, the target datasource UID shou
 ```bash
 # 1. Update the template
 # 2. Run Ansible
-ansible-playbook catafalco.yml --tags grafana --vault-id iac@.vaults
+ansible-playbook catafalco.yml --tags grafana
 
 # 3. Restart Grafana container (mandatory!)
 mcp__remote-server__restart_service --service grafana

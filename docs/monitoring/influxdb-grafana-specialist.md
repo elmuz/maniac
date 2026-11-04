@@ -198,7 +198,7 @@ Telegraf plugin field names often differ from documentation or expectations. Alw
 
 ```bash
 # Deploy Grafana template changes via Ansible
-ansible-playbook catafalco.yml --tags grafana --vault-id iac@.vaults
+ansible-playbook catafalco.yml --tags grafana
 
 # Restart Grafana via MCP (mandatory after provisioning changes!)
 mcp__remote-server__restart_service(service="grafana")
