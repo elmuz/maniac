@@ -461,7 +461,7 @@ Telegraf (host service) → InfluxDB v3 Core (Docker container: port 8181) → G
 ### Deploy Commands
 ```bash
 # Deploy Grafana changes
-ansible-playbook catafalco.yml --tags grafana --vault-id iac@.vaults
+ansible-playbook catafalco.yml --tags grafana
 
 # Restart Grafana container (mandatory after provisioning changes!)
 mcp__remote-server__restart_service(service="grafana")
@@ -708,6 +708,34 @@ Then run:
 ```bash
 ansible-playbook catafalco.yml -K --tag containers
 ```
+
+---
+
+## Agent trust boundary
+
+Running an AI agent against this repository is a trust decision, not a convenience flag. The
+full findings and the target architecture live in
+[`docs/issues/agent-trust-boundary.md`](docs/issues/agent-trust-boundary.md) (track **S**); the
+rules below are the ones that change what a sandbox run can do to the host.
+
+- **Default: do not mount the live workspace read-write into an agent sandbox.** Give the
+  sandbox a copy or its own clone and apply its changes as a reviewed patch. A read-write bind
+  lets the agent write `.git/config`, `.git/hooks`, `.pi/`, `.agents/`, `.pre-commit-config.yaml`,
+  `requirements.yml` and `AGENTS.md`, which the *host* `git`, `pi`, `pre-commit` and
+  `ansible-galaxy` execute or obey later. Ignored paths never show up in `git diff`; use a
+  full-tree hash and `git status --ignored` instead.
+- **Read-only is not a secret boundary.** `hosts` and ignored `.pi/` files remain readable;
+  keep the vault password out of the tree (S-03). It now lives only as a GPG-encrypted blob
+  read by `/usr/local/bin/vault-iac-pass` (tracked source: `scripts/vault-iac-pass`), and
+  `ansible.cfg` sets `vault_identity_list` — never reintroduce a plaintext key file. The
+  mechanism, its cache window (`gpg-agent.conf`) and what is still open are described in
+  [`docs/issues/agent-trust-boundary.md`](docs/issues/agent-trust-boundary.md) under S-03.
+- **Keep live credentials out of the sandbox** (provider key, GitHub token, GPG agent socket).
+  Use a provider proxy or a local model, and a token that cannot push (S-20).
+- **Relaxing this is allowed per threat model.** A read-write mount and live credentials are a
+  conscious acceptance of host code execution and credential reuse, not a safe default
+  (D10/D11). The owner's personal setup makes that trade-off deliberately; do not copy it
+  unless you have made the same decision.
 
 ---
 

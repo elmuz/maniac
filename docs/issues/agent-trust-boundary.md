@@ -1,10 +1,11 @@
 # Agent trust boundary and MCP privilege scope — assessment & TODO
 
-**Status:** OPEN · **Last updated:** 2026-10-24 01:00 CEST
+**Status:** OPEN · **Last updated:** 2026-11-04 21:30 CET
 **Hosts:** laptop (`alessio`, UID 1000) and `catafalco` (`192.168.178.3`)
 **Track:** **S** — new. The **T-01 … T-21** disk/MCP track is closed (git history `8f348cf`).
-**Scope:** the `pi` harness, `remote-server-mcp`, `disk-health-mcp`, the Ansible/vault
-credential plane, the deploy plane (S-17/S-18), and the privilege model of `catafalco`.
+**Scope:** the `pi` harness and its sandbox (including the workspace mount, S-19/S-20),
+`remote-server-mcp`, `disk-health-mcp`, the Ansible/vault credential plane, the deploy plane
+(S-17/S-18), and the privilege model of `catafalco`.
 
 > **Assessment only.** No host, repository or MCP change was made while producing this
 > document. Every credential named below is treated as exposed: rotate it before, or while,
@@ -35,15 +36,26 @@ Removing the credential must not remove the capability. The agent keeps the
 streams redacted results back; otherwise the sandbox trades one critical risk for the loss
 of the agent's primary task class and will be bypassed to get it back (S-17, Phase 1.5).
 
+The whitelist is also not a defence against the sandbox writing the tree the host consumes. A
+read-write bind mount of the live workspace lets the agent park code in `.git/hooks`,
+`.git/config`, `.pi/`, `.pre-commit-config.yaml` or `requirements.yml`, and instructions in
+`AGENTS.md`/`.agents/skills`, that the *host* `git`, `pi`, `pre-commit` and `ansible-galaxy`
+execute or obey on their next run. The clean defaults are: hand the sandbox a copy or its own
+clone (changes come back as a reviewed patch), and keep live credentials out of it. Sharing
+the live tree read-write is a legitimate per-threat-model relaxation, not a safe default
+(S-19/S-20).
+
 ---
 
-## Current state (2026-10-23)
+## Current state (2026-10-23; sandbox re-checked 2026-11-04)
 
 | Area | State | Consequence |
 |---|---|---|
 | MCP command policy | **Sound:** fixed catalog, canonical `shlex.join` argv allowlist, no generic execution, no `docker run`/`exec` | The MCP tools cannot be turned into a shell through input alone |
 | MCP file policy | **Mostly sound:** SFTP `realpath` confinement, sensitive-name blocks, `.env`/config redaction | Content reads are constrained; redaction has two gaps (S-08) and `get_service_file` is broad (S-09) |
-| Agent isolation | **None:** `pi` runs as `alessio` with the host home, SSH agent, vault and Ansible | The MCP is bypassable; host credentials are readable/writable (S-01, S-05, S-06) |
+| Agent isolation | **Partial:** `pi` now runs in a container with a container-local home and no SSH/Ansible, but the host tree is bind-mounted read-write and live credentials are still reachable | The container boundary is real, yet the shared tree is a host execution input and the credentials remain exfiltratable (S-01, S-19, S-20) |
+| Sandbox workspace mount | **Live tree, RW:** the host repository is mounted at `/workspace` and at its own path; `.git`, `.git/config`, `.git/hooks`, `.pi`, `.agents/skills`, `.vaults`, `hosts`, `.pre-commit-config.yaml` are writable | Host `git`/`pi`/`pre-commit`/`ansible-galaxy` later execute or obey sandbox-written content (S-19) |
+| Sandbox credentials | **Present:** provider auth (`/auth-seed/auth.json`), a GitHub token (`/secrets/gh_token`) and the host GPG agent socket (`/gpg`) | A hostile session can reuse or exfiltrate them; the provider API is the channel (S-20, Appendix E) |
 | Remote privilege model | **Root-equivalent:** `funkysloth` is in `docker` and `sudo`; the MCP uses the same user | A stolen SSH key or a direct `ssh` is root on `catafalco` (S-02) |
 | Vault | **Effectively unlocked:** 9-byte password in `~/.vault_pass` (0644) and `.vaults` (0600) | The admin password, `ansible_ssh_pass` and every app/API secret are decryptable by the agent (S-03) |
 | Ansible | **Arbitrary root executor** available to the agent | `ansible-playbook` with `become: true` is a root shell (S-04) |
@@ -131,6 +143,7 @@ only call the MCP.** The MCP's whitelist then becomes the real enforcement point
 | G | Compromise `telegraf` → `nvme format` / Docker API | Telegraf docker + broad sudo (present) | Disk destruction / root | High |
 | H | Password SSH or root login | No sshd hardening applied (likely) | Direct login, bypasses key controls | Medium |
 | I | Deploy broker used as a root launcher | Broker reachable from the sandbox (Phase 1.5 present) | A role under an allowed tag runs as root on `catafalco` | High |
+| J | Sandbox writes the live tree, host executes it later | RW workspace bind (present) | Code execution as `alessio` on the laptop through `git`/`pi`/`pre-commit`; injected host-agent instructions | Critical |
 
 ### Path A — SSH + docker group (no MCP involvement)
 
@@ -224,11 +237,13 @@ budget stops a looping or injected agent.
   `.vaults`, `~/.config/*-mcp/.env`, `~/code/server-mcp` and the audit log are all owned or
   readable by `alessio`.
 - **Why:** a whitelist the caller can bypass is not a security control.
-- **Do:** run `pi` in a container/VM with only the workspace (or a copy), a tmpfs home, no
-  `~/.ssh`, no `~/.config`, no vault, no `ansible`, no `ssh-agent`. Use a dedicated OS user at
-  minimum; a container is the real boundary. Restrict egress to the model API and the MCP.
+- **Do:** run `pi` in a container/VM with a **copy or its own clone** of the workspace (not a
+  read-write bind of the live tree, S-19), a tmpfs home, no `~/.ssh`, no `~/.config`, no vault,
+  no `ansible`, no `ssh-agent`. Use a dedicated OS user at minimum; a container is the real
+  boundary. Restrict egress to the model API and the MCP.
 - **Done when:** inside the agent environment, `ls ~/.ssh` fails, `ansible-playbook` is absent,
-  `SSH_AUTH_SOCK` is unset, `ssh catafalco` fails, and the only route to `catafalco` is the MCP.
+  `SSH_AUTH_SOCK` is unset, `ssh catafalco` fails, `test -w .git/hooks` and `test -w .pi` fail,
+  and the only route to `catafalco` is the MCP.
 
 ---
 
@@ -254,9 +269,11 @@ budget stops a looping or injected agent.
 
 ### S-03 — The Ansible vault is effectively unlocked
 
-- **Severity:** Critical · **Status:** open
-- **Evidence:** `~/.vault_pass` is `0644`, 9 bytes; `.vaults` is `0600`, 9 bytes, in the repo.
-  `ansible-vault view` with either file lists `password`, `ansible_ssh_pass`,
+- **Severity:** Critical · **Status:** **mitigated 2026-11-05** — mechanism fixed, content
+  rotation and the pre-commit guard still open (see the last two bullets of **Do**)
+- **Evidence (pre-fix):** `~/.vault_pass` is `0644`, 9 bytes; `.vaults` is `0600`, 9 bytes, in the repo
+  and therefore inside every sandbox that mounts the workspace (S-19), even one that has no
+  `~/.vault_pass`. `ansible-vault view` with either file lists `password`, `ansible_ssh_pass`,
   `influxdb_token`, `cloudflare_api_token`, `duckdns_token`, `duplicati_b2_*`,
   `email_password`, `hugging_face_token`, `prometheus_api_token`, `samba_users`, and many
   application admin passwords.
@@ -265,8 +282,28 @@ budget stops a looping or injected agent.
   live.
 - **Do:** rotate the vault password and every secret it protects; move the vault password to a
   hardware-backed mechanism (age/YubiKey, GPG with a hardware token, or `secret-tool` with a
-  user-presence prompt). Delete the on-disk copies. Use `--vault-password-file` pointing at a
-  FIFO or an agent-backed script, never a plain file in the home or repo.
+  user-presence prompt). Delete the on-disk copies, including the `.vaults` in the workspace
+  (a workspace mount exposes it even when the home is not mounted). Use
+  `--vault-password-file` pointing at a FIFO or an agent-backed script, never a plain file in
+  the home or repo.
+- **Implemented (2026-11-05):** the vault password is 36 random bytes (`base64` ⇒ 48 chars)
+  existing only as `~/.config/ansible/vault-iac.gpg` (0600 in a 0700 dir), encrypted to the
+  user's passphrase-only EDDSA key (`C1A29A75…C94DB0`). The only reader is
+  `/usr/local/bin/vault-iac-pass` (root:root 0755, source tracked as `scripts/vault-iac-pass`,
+  secret-free): it pins `GNUPGHOME` to `~/.local/share/gnupg` — this host's ALHP build keeps the
+  keyring under `XDG_DATA_HOME`, and only systemd-user sessions export it — and runs
+  `gpg --no-tty --decrypt`, so the single unlock path is gpg-agent → `pinentry-fuzzel`.
+  `ansible.cfg` sets `vault_identity_list = iac@/usr/local/bin/vault-iac-pass`, so no command
+  needs `--vault-id`. All six vaults were rekeyed in one invocation; `.vaults` and
+  `~/.vault_pass` were shredded (`.vaults` was never committed). `gpg-agent.conf` now has
+  `default-cache-ttl 60` / `max-cache-ttl 300` / `no-allow-external-cache` (sliding: 60 s idle,
+  300 s hard cap); SSH identity TTLs were left long on purpose. The Nitrokey reads as an empty
+  OpenPGP 3.4 card, so a `touch` policy remains the upgrade path, not the current state.
+- **Still open:** (1) rotate every vault *content* per Appendix D — the old ciphertext in git
+  history was encrypted with the brute-forceable 9-byte password, so rekeying protects the
+  future only; (2) add the pre-commit secret guards (`detect-secrets` + a check that fails on a
+  `.vaults`/`*vault*pass*` file, a `secret.yml` not starting with `$ANSIBLE_VAULT;`, or a
+  literal secret in the wrapper).
 - **Done when:** no vault password file is readable by the agent; `ansible-vault view` requires
   user presence; all pre-rotation secrets fail; the rotation is recorded in Appendix D.
 
@@ -562,6 +599,82 @@ budget stops a looping or injected agent.
 
 ---
 
+### S-19 — A read-write bind mount of the live workspace is a host code-execution channel
+
+- **Severity:** Critical · **Status:** open
+- **Evidence (verified inside the sandbox on 2026-11-04, UID 1000):** the host repository
+  `/home/alessio/code/maniac` is bind-mounted read-write at `/workspace` and at its own path.
+  `test -w` succeeds for `.git`, `.git/config`, `.git/hooks`, `.pi`, `.agents/skills`,
+  `.vaults`, `hosts` and `.pre-commit-config.yaml`. `.pi/mcp.json` inside the sandbox is a
+  bind of `.pi/mcp.sandbox.json`, i.e. it is the same project config the host would load.
+  `git status --ignored` lists `.pi/`, `.vaults` and `hosts` as ignored, so a normal diff
+  review never shows them.
+- **Why:** the sandbox is not the only consumer of the tree. Host processes consume it later
+  and *execute* parts of it:
+  - **`.git/config` and `.git/hooks/*`** are executed by the host `git` on the next
+    `status`/`diff`/`commit`/`fetch`: `core.hooksPath`, `core.fsmonitor`, `core.pager`,
+    `diff.external`, `alias.*`, `credential.helper`. Neither appears in `git diff`, and `.git`
+    is outside the review a human gives to source changes.
+  - **`.pi/settings.json`, `.pi/mcp.json`, `.pi/extensions/`, `.pi/skills/`, `.pi/SYSTEM.md`,
+    `.agents/skills/*`** are loaded by the host `pi` at startup. Project trust prompts once and
+    the decision is remembered, so the next host session loads them without a prompt;
+    extensions execute in-process with the host user's permissions.
+  - **`AGENTS.md` / `AGENTS.override.md` / `CLAUDE.md`** load regardless of project trust. A
+    sandbox can rewrite the instructions the *host* agent follows — prompt injection into the
+    process that holds the vault and the SSH key.
+  - **`.pre-commit-config.yaml`** is consumed by the host's `pre-commit`, and
+    **`requirements.yml`** by `ansible-galaxy install`; both execute third-party code that the
+    sandbox can redirect.
+  - **`roles/`, `tasks/`, `files/`, `catafalco.yml`** are the deploy input (S-17/Path I). A tree
+    hash records what was deployed; it does not stop the sandbox from writing the live tree the
+    human deploys next.
+- **Why this is not covered elsewhere:** S-01–S-18 assume the agent plane can only *call* host
+  services. This is the agent plane *writing the host's inputs*. An MCP whitelist, an egress
+  allowlist, redaction and a read-only deploy copy do not help while the live tree is writable.
+- **Do (conservative default):** never hand the sandbox a read-write bind of the live tree.
+  - Preferred: give it a copy or its own clone (its own `.git`, so `git diff`/commit work
+    there) and bring changes back as a reviewed patch (`git format-patch` / `git diff`) or a
+    branch the human merges after review.
+  - If the tree must be shared, mount it read-only and put writable output in a scratch dir,
+    or use an overlayfs copy-on-write upper layer and export from it.
+  - If a read-write mount is chosen anyway, mount `.git`, `.pi`, `.agents`, `.vaults`, `hosts`,
+    `.pre-commit-config.yaml`, `requirements.yml` and `AGENTS.md` as read-only (or tmpfs) over
+    the shared tree, and review with `git status --ignored` plus a full-tree hash, not only
+    `git diff`.
+- **Caveat:** read-only solves integrity, not confidentiality. `.vaults`, `hosts`, ignored
+  `.pi/` files and the git objects stay readable; S-03 (move the vault password out of the
+  tree) is still required.
+- **Done when:** inside the sandbox, `test -w .git/hooks` and `test -w .pi` fail; the host runs
+  `git`/`pi`/`pre-commit` only on a tree the sandbox could not modify; sandbox changes arrive
+  as a reviewed patch; a before/after tree hash lists any ignored-file change.
+
+---
+
+### S-20 — Live credentials are still mounted into the sandbox
+
+- **Severity:** High · **Status:** open (owner-accepted for the current personal sandbox; the
+  default guidance below still stands)
+- **Evidence (verified 2026-11-04):** `/auth-seed/auth.json` and `/shared-auth/auth.json` are
+  readable and hold the provider credential; the sandbox's own auth path resolves to them.
+  `/secrets/gh_token` is a readable 94-byte file and `gh` is on `PATH`, i.e. a live GitHub
+  credential for `elmuz/maniac`.
+  `/gpg` bind-mounts the host GPG agent socket and public keyring, so the sandbox can request
+  signatures/decryptions from the host agent. `/state/pi-agent/settings.json` is writable (the
+  sandbox's own settings, not the host's).
+- **Why:** a hostile or prompt-injected session does not need to break the container: it can
+  `gh push` to `origin` (supply-chain write), call the model API with the real key, and use the
+  host agent for anything the agent holds. The provider API is also the exfiltration channel
+  that carries everything else it reads (S-19, Appendix E).
+- **Do:** use a provider proxy with a placeholder credential (`sbx secret` / an HTTP proxy) and
+  a local model for sensitive sessions; do not mount a GitHub token into the sandbox, or mount
+  a read-only token that cannot push; drop the GPG socket or make the keyring read-only; rotate
+  `gh_token` after any session that might have been hostile. Treat the workspace as readable by
+  the sandbox even when it is mounted read-only.
+- **Done when:** `gh auth status`/`gh push` fails in the sandbox, no real provider key is
+  readable there, and no agent socket that can sign or decrypt is mounted.
+
+---
+
 ## Target architecture
 
 ### The invariant
@@ -575,9 +688,10 @@ budget stops a looping or injected agent.
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ Agent plane (untrusted)                                      │
-│  pi in a container/VM, workspace only, tmpfs home            │
-│  no ~/.ssh, no ~/.config, no vault, no ansible, no agent     │
-│  egress: model API + MCP endpoint only                       │
+│  pi in a container/VM, a workspace copy (or a read-only      │
+│  mount plus a writable scratch dir), tmpfs home, no live     │
+│  VCS/agent metadata, no ~/.ssh, no ~/.config, no vault, no   │
+│  ansible, no agent; egress: model API + MCP endpoint only    │
 └───────────────────────────┬──────────────────────────────────┘
                             │ MCP + deploy plane (HTTP + token)
 ┌───────────────────────────▼──────────────────────────────────┐
@@ -660,10 +774,18 @@ setup); move the vault key last (S-03 is moot until S-01/S-04 are in place).
 
 - [ ] Rotate every secret in `host_vars/*/secret.yml`, `group_vars/*/secret.yml` and the two
       MCP `.env` files. Use Appendix D as the checklist. Assume all values are exposed.
-- [ ] Move the vault password off disk; delete `~/.vault_pass` and `.vaults`; switch to a
-      hardware-backed mechanism with user presence.
-- [ ] Run `pi` in a container/VM with only the workspace; no host home, no `~/.ssh`, no
-      `~/.config`, no vault, no `ansible`, no `ssh-agent`.
+- [x] Move the vault password off disk; delete `~/.vault_pass` and `.vaults` (2026-11-05, see
+      S-03 for the mechanism). Hardware presence is **not** in place yet: the key is
+      passphrase-only in `~/.local/share/gnupg`, with a 60 s/300 s agent cache.
+- [ ] Add the pre-commit secret guards (`detect-secrets`, `detect-private-key`, and a local
+      check for `.vaults`/`*vault*pass*` files, non-`$ANSIBLE_VAULT;` `secret.yml`, and a
+      literal secret inside `scripts/vault-iac-pass`).
+- [ ] Run `pi` in a container/VM with a **copy or clone** of the workspace (default), or a
+      read-only mount plus a writable scratch dir; no host home, no `~/.ssh`, no `~/.config`,
+      no vault, no `ansible`, no `ssh-agent`. A read-write bind of the live tree is the
+      relaxation, and it means the sandbox can run code as you on the host (S-19).
+- [ ] Keep `.vaults` out of the workspace (S-03) and do not mount `gh`/provider/GPG live
+      credentials into the sandbox (S-20).
 - [ ] Remove `funkysloth` from `docker` (after the MCP has a broker or a dedicated user), and
       keep the admin `sudo` password out of the agent's reach.
 - [ ] Add the `pi` permission gate for destructive MCP tools.
@@ -703,7 +825,9 @@ the original plan was missing, not because it is optional.
       Human-gated (refused from the sandbox): `bootstrap`, `system`, `security`, `sshd`,
       `mounts`, `mergerfs`, `snapraid`, `hd_idle`, and anything writing `/etc/sudoers.d`.
 - [ ] Copy the workspace tree into a read-only per-run directory, record its hash, and run
-      Ansible from that copy so post-hoc edits cannot re-explain a run.
+      Ansible from that copy so post-hoc edits cannot re-explain a run. This anchors the
+      *deploy*, not the live tree: a writable sandbox can still write what the human deploys
+      next (S-19).
 - [ ] Take a pre-deploy snapshot of `/srv` (restic run or btrfs/LVM snapshot) and record the
       snapshot id in the audit record.
 - [ ] Add a post-deploy health gate for the affected services (`compose ps`, container health,
@@ -756,6 +880,8 @@ the original plan was missing, not because it is optional.
 | D7 | Who applies an agent change? | **A deploy plane outside the sandbox** that owns the vault/SSH key and streams redacted events (S-17). Laptop-side broker with the MCP in Phase 1.5; host-side in Phase 2. Never: the agent holding the vault, and never “the human re-runs it by hand” as the only path. |
 | D8 | How is the vault password unlocked? | **No on-disk key.** An executable `--vault-password-file` that unwraps a GPG secret through `pinentry` with user/hardware presence, kept at a root-owned path outside the home; delete `~/.vault_pass` and `.vaults`. This is only meaningful once Ansible is off the agent plane (S-01/S-04) — a warm `gpg-agent` cache, a writable `gpg-agent.conf` and a fuzzel prompt the requester controls are all bypasses while `pi` runs as `alessio`. |
 | D9 | Does the MCP have to live on `catafalco`? | **No — Option A is an acceptable end state.** Keeping the MCP local is fine provided it runs as its own user/service reached over streamable HTTP, from a path the agent cannot write, and the sandbox mounts none of the host home or runtime sockets. Option B is still preferred because it deletes the laptop→server credential. |
+| D10 | Mount the live workspace read-write into the sandbox? | **No by default.** Hand it a copy or its own clone and bring changes back as a reviewed patch; read-only plus scratch output is the next step up. A read-write bind is an explicit relaxation that accepts host code execution through `.git`/`.pi`/`AGENTS.md`/`pre-commit`/`requirements.yml` (S-19). The current personal setup keeps the read-write bind; that is accepted, not recommended. |
+| D11 | Keep live credentials inside the sandbox? | **No.** Provider key → proxy with a placeholder or a local model; no GitHub token (or read-only, no push); no host GPG agent socket (S-20). Current personal setup accepts the provider key and `gh_token` mounts for usability. |
 
 ---
 
@@ -806,6 +932,15 @@ command -v ansible-vault
 ansible-vault view host_vars/catafalco/secret.yml          # must fail
 ssh -G catafalco >/dev/null 2>&1                          # no route if egress is cut
 echo "${SSH_AUTH_SOCK:-unset}"                            # must be unset
+
+# The live tree must not be writable from the sandbox (S-19)
+for p in .git .git/config .git/hooks .pi .agents/skills .pre-commit-config.yaml \
+         requirements.yml .vaults hosts AGENTS.md; do
+  test -w "$p" && echo "WRITABLE $p" || echo "ro $p"
+done
+git status --ignored --short | head                    # what a diff review would miss
+test -r /secrets/gh_token && echo "gh token readable"  # expected to fail (S-20)
+test -r /auth-seed/auth.json && echo "provider key readable"  # expected to fail (S-20)
 
 # The loop must still work (Phase 1.5): check + deploy + logs, unattended
 deploy(check=true, tags=["grafana"])                       # rc 0, reports changes
@@ -903,6 +1038,7 @@ anywhere.
 | AI | `hugging_face_token` | Hugging Face |
 | Samba | `samba_users` | `smbpasswd` on the host |
 | MCP | `INFLUXDB_TOKEN` in both `.env` files | InfluxDB; issue read-only tokens |
+| GitHub (sandbox mount) | `/secrets/gh_token` | GitHub → fine-grained PAT; remove the mount or make it read-only (S-20) |
 
 Record the rotation date and the verification command in Appendix B. If a secret cannot be
 rotated, document the compensating control and the expiry date.
@@ -932,6 +1068,19 @@ rotated, document the compensating control and the expiry date.
   until the role is fixed.
 - **The agent's workspace is writable, and it is the deploy input.** The broker deploys code
   the model wrote. The tree-hash anchor and the audit record give forensics, not prevention.
+  The current personal setup deliberately keeps a read-write bind of the live tree; that
+  accepts S-19 in full: the sandbox can park code in `.git/config`, `.git/hooks`, `.pi/`,
+  `.pre-commit-config.yaml`, `requirements.yml` or `AGENTS.md`, and the host executes or obeys
+  it later. A diff review does not show ignored paths (`.pi/`, `.vaults`, `hosts`); compare a
+  full-tree hash and `git status --ignored` instead.
+- **The sandbox still holds live credentials.** The personal setup mounts the provider auth,
+  a GitHub token and the host GPG agent socket (S-20). Accepted for that threat model: the
+  container is trusted to hold reusable credentials, so it is not a credential boundary. The
+  default for anyone else is the opposite (S-01/S-20), and `gh_token` must be treated as
+  exposed after any session that could have been hostile.
+- **Read-only is not a confidentiality boundary.** If the workspace is mounted read-only, the
+  sandbox still reads `.vaults`, `hosts`, ignored `.pi/` files and git objects; only the
+  integrity half of S-19 is solved.
 
 ---
 
