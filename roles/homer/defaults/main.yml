@@ -3,3 +3,18 @@ homer_container_name: homer
 homer_network_name: homer_network
 homer_title: Welcome to Cata Falco dashboard!
 homer_subtitle: I wish I could fly
+
+# The Pi-hole card is rendered by the browser, and the Pi-hole v6 API sends no
+# Access-Control-Allow-Origin header (unlike Radarr/Sonarr/Immich, there is no
+# CORS support and no CORS_HOSTS replacement since v6). A cross-origin API URL
+# such as https://di.en.es/api/... is therefore blocked by the browser and the
+# card only ever shows "Authentication failed". The API is proxied on the
+# dashboard's own origin instead (homer.subdomain.conf.j2), so the request is
+# same-origin and no CORS header is needed.
+homer_pihole_api_path: /pihole
+# Pi-hole webserver the prefix is proxied to. `dns` is the Pi-hole pool from
+# group_vars/home; pihole_address is the name used for the card link.
+homer_pihole_api_upstream: "{{ (dns | default([]) | first) | default(pihole_address) }}"
+homer_pihole_api_port: 443
+# Pi-hole's webserver serves HTTPS with its own self-signed certificate.
+homer_pihole_api_proto: https

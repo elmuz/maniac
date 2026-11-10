@@ -72,9 +72,15 @@ services:
         target: "_blank"
 
       # See here for details https://github.com/bastienwirtz/homer/issues/478#issuecomment-1192372131
+      # `url` is the clickable link only: it keeps the /admin/login UI path.
+      # `endpoint` is the API base the card fetches from. In v6 the API lives at
+      # the server root (/api/...), never under /admin, and it must be
+      # same-origin because Pi-hole v6 sends no CORS headers (see
+      # homer_pihole_api_path in defaults/main.yml).
       - name: "PiHole"
         logo: /assets/tools/homer-icons/pihole.png
         url: "https://{{ pihole_address }}/admin/login"
+        endpoint: "https://{{ site_url }}{{ homer_pihole_api_path }}"
         apikey: "{{ dns_api_key[0] }}"
         type: "PiHole"
         apiVersion: 6

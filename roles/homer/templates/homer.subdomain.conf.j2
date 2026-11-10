@@ -4,6 +4,36 @@ server {
 
     server_name {{ site_url }};
 
+    # Pi-hole v6 API, proxied on the dashboard origin for the Homer Pi-hole card.
+    # Homer appends /api/... to the endpoint, so /pihole/api/auth arrives here and
+    # is forwarded as /api/auth. Pi-hole v6 sends no Access-Control-Allow-Origin
+    # header, so the card cannot read https://<pihole>/api/... directly: the
+    # browser blocks it with a CORS error and Homer reports "Authentication failed".
+    location {{ homer_pihole_api_path }}/ {
+        include /config/nginx/proxy.conf;
+        include /config/nginx/resolver.conf;
+        # Assign the upstream variables *before* the rewrite: `set` is a
+        # rewrite-module directive, and the `break` flag stops processing the
+        # rest of that script. With the sets behind the rewrite they never run,
+        # proxy_pass evaluates an empty "://" URL and nginx answers 500.
+        set $upstream_app {{ homer_pihole_api_upstream }};
+        set $upstream_port {{ homer_pihole_api_port }};
+        set $upstream_proto {{ homer_pihole_api_proto }};
+        rewrite ^{{ homer_pihole_api_path }}/(.*)$ /$1 break;
+        # Pi-hole answers its own names only. Pass an IP as Host so the request
+        # is accepted whether or not a web password is set (FTL's known_host()
+        # accepts an address but not the dashboard name).
+        proxy_set_header Host {{ homer_pihole_api_upstream }};
+        # Self-signed Pi-hole certificate; SNI is still needed to pick the vhost.
+        proxy_ssl_server_name on;
+        proxy_ssl_name {{ pihole_address }};
+        proxy_ssl_verify off;
+        # errors.conf sets `proxy_intercept_errors on`, which would replace the
+        # Pi-hole JSON errors (401 etc.) with the themed HTML 5xx page.
+        proxy_intercept_errors off;
+        proxy_pass $upstream_proto://$upstream_app:$upstream_port;
+    }
+
     location / {
         include /config/nginx/proxy.conf;
         include /config/nginx/resolver.conf;
