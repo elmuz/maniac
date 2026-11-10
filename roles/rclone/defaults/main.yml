@@ -1,0 +1,12 @@
+---
+# A `sync` job makes the remote identical to the source, so a source-side
+# accident (mass deletion, a missing mergerfs branch that survived the mount
+# guard) is mirrored in a single run. The julia -> catafalco jobs carry the
+# same risk in the other direction.
+#
+# Cap how many entries one run may delete. Crossing the cap aborts the job,
+# which also means no Healthchecks success ping, so the missed ping is the
+# alert. A deliberate large deletion is a one-off run with a higher cap after
+# reviewing a --dry-run; versioning on the julia side (snapshots, restic) is
+# the longer-term answer, not a larger cap.
+rclone_max_delete: 100
