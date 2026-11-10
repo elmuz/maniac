@@ -64,6 +64,24 @@ if [ ${#SOURCE_PATHS[@]} -eq 0 ] || [ -z "$DESTINATION_PATH" ]; then
     exit 1
 fi
 
+# Refuse to write into a destination that is not the mergerFS pool. When the
+# pool is not mounted, its mount point is a plain directory on the root
+# filesystem: the job would quietly fill / with a copy that can never be
+# restored, and the next mirror run would treat the pool as empty.
+if ! command -v findmnt >/dev/null 2>&1; then
+    log_error "findmnt not found; cannot verify that $DESTINATION_PATH is on the mergerFS pool."
+    exit 1
+fi
+probe="$DESTINATION_PATH"
+while [ ! -e "$probe" ] && [ "$probe" != "/" ]; do
+    probe=$(dirname "$probe")
+done
+destination_fstype=$(findmnt -rn -T "$probe" -o FSTYPE 2>/dev/null || true)
+if [ "$destination_fstype" != "fuse.mergerfs" ]; then
+    log_error "Destination $DESTINATION_PATH resolves to $probe ($destination_fstype), not the mergerFS pool. Refusing to back up."
+    exit 1
+fi
+
 # Exclusions are rsync patterns relative to each source root. When at least one
 # is given, --delete-excluded also removes already-copied excluded paths from
 # the destination. That is deliberate: a subtree that has been removed from the
