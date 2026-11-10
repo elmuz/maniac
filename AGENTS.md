@@ -130,11 +130,12 @@ maniac/
 │   ├── nilde/              # Alternative configuration
 │   ├── pihole-one/         # Pi-hole node 1
 │   └── pihole-two/         # Pi-hole node 2
-├── roles/                  # ~64 Ansible roles
+├── roles/                  # ~65 Ansible roles
 │   ├── System & Bootstrap
 │   │   ├── system/         # System bootstrapping
 │   │   └── zsh/            # Shell configuration
 │   ├── NAS & Storage
+│   │   ├── storage_preflight/  # Fail-closed mount/branch guard for data jobs
 │   │   ├── mergerfs/       # MergerFS filesystem
 │   │   ├── mounts/         # Disk mounts
 │   │   ├── hd_idle/        # Hard drive idle timeout
@@ -284,6 +285,40 @@ Each role follows a consistent structure:
 | `miniflux` | Miniflux | RSS reader |
 | `cypht` | Cypht | Webmail |
 | `dawarich` | Dawarich | Location history |
+
+---
+
+## Storage guards (cache, mergerfs, SnapRAID, rclone)
+
+The data-moving jobs treat "not visible" as "deleted", so every one of them runs the same
+fail-closed guard first. The analysis is in [`docs/storage-review.md`](docs/storage-review.md)
+and the remediation plan in [`docs/backup/backup-plan.md`](docs/backup/backup-plan.md); the rules
+that matter day to day are:
+
+- **`/usr/local/sbin/storage-preflight`** (role `storage_preflight`) verifies that every
+data/cache/parity mount and SnapRAID content subvolume is a real mount with the expected fstype,
+and that each mergerfs union carries all of its branches. Branch presence is checked with hidden
+marker files written on every branch (`.branch-data1`, `.branch-cache1`, …) and required to be
+visible through each union; SnapRAID runs with `nohidden`, so markers never enter parity. Do
+**not** replace this with "parse `findmnt -o SOURCE` and expand the globs": the union records the
+source it was mounted with, so re-expanding `/mnt/data*` at check time always shows today's
+branches and cannot detect a union mounted before a disk appeared.
+- It is called by the uncache cron job, every `rclone` cron job and
+`snapraid-btrfs-runner.service` (`ExecStartPre=`), always under
+`{{ storage_maintenance_lock_file }}` (`/run/lock/storage-maintenance.lock`) so no two
+data-moving jobs overlap. Jobs that mirror data also pass `--source`, which refuses an empty
+source directory. A refused run pings Healthchecks `/fail`; the missed success ping is the alert.
+- **`snapraid_deletethreshold` must stay finite.** `-1` disables the mass-deletion guard and lets
+an accidental `rm`, a failed restore or a missing mount be written into parity. A genuinely large
+deletion is a one-off `--ignore-deletethreshold` after inspecting `snapraid diff`.
+- **`rclone sync` jobs carry `--max-delete` (`rclone_max_delete`)**, because a mirror makes the
+remote identical to a poisoned source. Deleting more than the cap aborts the run instead of
+propagating; raise it for one deliberate run after a `--dry-run`, do not remove it.
+- **Service backups refuse a destination that is not the mergerFS pool** and skip the databases'
+own stores (e.g. the InfluxDB `db/`): an unmounted pool looks like a writable directory on `/`,
+and copying a retention-managed store daily only creates churn and no restore value.
+- **Do not "fix" a failing preflight by removing the call.** A missing guard script shows up as a
+failing job; that is the intended failure mode, not a regression.
 
 ---
 

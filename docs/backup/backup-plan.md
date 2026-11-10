@@ -130,6 +130,10 @@ The result is a **daily per-service mirror** to a local staging directory, follo
 
 - **B-P1-1: The external copy is a mirror, not a backup.**
   `rclone sync` with `--delete` propagates deletions and corruption from Catafalco to Julia. There is no version history, no retention, and no encryption. If a config is deleted or a database is corrupted at the source, the good copy is overwritten. Julia snapshots may mitigate this, but that is not part of this repository’s design and is not verified.
+  > **Partially mitigated (`6558403`).** Every `rclone sync` now carries `--max-delete`
+  > (`rclone_max_delete`, default 100), so a mass deletion aborts the run — and the missed
+  > Healthchecks ping — instead of propagating. Version history on the julia side is still the
+  > real answer (B-09/B-12).
 
 - **B-P1-2: Staging is on the same failure domain as the source.**
   `/mnt/storage/docker-volumes-backup` is on the same mergerFS pool as `/mnt/storage`. SnapRAID protects against disk failure, not deletion, ransomware, or filesystem corruption. A pool-level event can destroy both the source and the staging copy. The only independent copy is Julia, and it is a mirror.
@@ -213,6 +217,10 @@ The existing `roles/restic` already provides the repository/config/retention pat
   - **Done when:** each service has a job, a log, and a Healthchecks ping.
 
 - [ ] **B-04 — Harden `files/generic_backup.sh`.**
+  > **Partially implemented (`34261c0`).** The destination is checked before any container is
+  > stopped: the nearest existing ancestor must be `fuse.mergerfs`, so an unmounted pool cannot
+  > collect a backup on `/`. The restart trap, in-script `flock`, free-space check, Healthchecks
+  > pings and log rotation are still open (see also B-P0-3).
   - Add a restart trap:
     ```sh
     STARTED=()
@@ -225,12 +233,9 @@ The existing `roles/restic` already provides the repository/config/retention pat
     ```
   - Add `flock` to prevent overlapping runs.
   - Use `docker stop --time "${STOP_TIMEOUT:-60}"` for DB-backed services.
-  - Assert the destination is on the expected mergerFS pool, not a plain directory on the root filesystem:
-    ```sh
-    findmnt -rn -T "$DESTINATION_PATH" -o FSTYPE | grep -qx fuse.mergerfs || {
-      log_error "$DESTINATION_PATH is not on the mergerFS pool"; exit 1;
-    }
-    ```
+  - ~~Assert the destination is on the expected mergerFS pool, not a plain directory on the root
+    filesystem.~~ Done in `34261c0`. It resolves the nearest existing ancestor, so it also covers a
+    destination directory that does not exist yet.
   - Check free space; continue restarting all containers even if one step fails; ping Healthchecks on success/failure.
   - Add log rotation for `/var/log/backups/*.log`.
   - **Done when:** killing the script after `docker stop` still restarts the containers, and a failed rsync produces a non-zero exit plus an alert.
