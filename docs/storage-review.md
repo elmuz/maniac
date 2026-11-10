@@ -461,7 +461,7 @@ running system until the roles are deployed.
 | P0-2 SnapRAID mass-deletion guard disabled | `8946fdd` | `snapraid_deletethreshold: 10000` (was `-1`), plus `notify: Reload systemd` and `daemon_reload: true` so the changed unit is actually picked up (`7fb5904`). |
 | P0-3 uncache can move active downloads | `ed64a0a` | `--min-age-hours 24`, `os.path.ismount` checks on cache and slow pool, non-zero `rsync` exit aborts with a `/fail` ping, and the cron job takes the shared lock with `flock -n`. Client-owned data stays in the cache: the excluded set is `docker-volumes-cache` **and the whole `Downloads` tree**, which is more conservative than the per-directory exclusions suggested above. |
 | P0-4 InfluxDB backup copies the whole store | `e0ce7e0` | `influxdb_backup_exclude_paths` (`/db/`) passed to `generic_backup.sh`, which gained `--exclude` and applies `--delete-excluded` when exclusions are present, so the stale store copy is removed on the next run. The container is no longer stopped. The same commit fixes the retention check: `influxdb3 show retention` exits 0 with an empty table for a missing database, so the old existence test skipped creation and let Telegraf recreate the database with infinite retention. |
-| P0-5 rclone mirrors need a deletion cap | `6558403` | `--max-delete {{ rclone_max_delete }}` (default 100) on every `rclone sync`, julia→catafalco included. |
+| P0-5 rclone mirrors need a deletion cap | `6558403`, `e6ba3d6` | `--max-delete` (default 100) on every `rclone sync`, julia→catafalco included. The effective value is read at run time through `/usr/local/bin/rclone-delete-cap`, so `rclone_max_delete_override_file` (`/etc/rclone-max-delete`) raises it for one cleanup and deleting the file revokes it; the runbook is in [`docs/backup/backup-plan.md`](backup/backup-plan.md) §12. |
 | (P0-1, backup side) | `34261c0` | `generic_backup.sh` resolves the nearest existing ancestor of the destination and refuses unless it is `fuse.mergerfs`, so a backup can no longer fill `/` while the pool is unmounted (the backup-plan B-04 destination assertion). |
 
 **Why marker files instead of parsing the union source.** The first implementation read
@@ -474,8 +474,9 @@ through the union, which is the property that matters. Verified by experiment be
 
 - **A deliberate mass deletion now stops instead of propagating.** More than 10000 removed files
   between two SnapRAID syncs aborts the run; more than 100 entries between two rclone runs aborts
-  the mirror. Both are one-off overrides after inspecting the diff (`--ignore-deletethreshold`,
-  a higher `--max-delete`), not new configuration.
+  the mirror. A large cleanup is a reviewed one-off: delete the same subtree at the destination,
+  or raise `/etc/rclone-max-delete` for one run and remove it afterwards
+  (backup-plan §12); SnapRAID takes `--ignore-deletethreshold` after `snapraid diff`.
 - **The uncache job is less aggressive.** Files touched in the last 24 h never move and the whole
   `Downloads` tree is left alone, so the cache may sit at its 75 % target with fresh data still
   in it. Lower `uncache_min_age_hours` or narrow the exclusions if that becomes a space problem.

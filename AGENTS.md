@@ -311,9 +311,12 @@ source directory. A refused run pings Healthchecks `/fail`; the missed success p
 - **`snapraid_deletethreshold` must stay finite.** `-1` disables the mass-deletion guard and lets
 an accidental `rm`, a failed restore or a missing mount be written into parity. A genuinely large
 deletion is a one-off `--ignore-deletethreshold` after inspecting `snapraid diff`.
-- **`rclone sync` jobs carry `--max-delete` (`rclone_max_delete`)**, because a mirror makes the
-remote identical to a poisoned source. Deleting more than the cap aborts the run instead of
-propagating; raise it for one deliberate run after a `--dry-run`, do not remove it.
+- **`rclone sync` jobs carry `--max-delete` (`rclone_max_delete`, default 100)**, because a
+mirror makes the remote identical to a poisoned source. The effective value is read at run time
+from `/usr/local/bin/rclone-delete-cap`, which honours `rclone_max_delete_override_file`
+(`/etc/rclone-max-delete`): write an integer there to raise the cap for one cleanup, delete the
+file to restore the managed value. Never remove the flag itself; the runbook is in
+`docs/backup/backup-plan.md` §12.
 - **Service backups refuse a destination that is not the mergerFS pool** and skip the databases'
 own stores (e.g. the InfluxDB `db/`): an unmounted pool looks like a writable directory on `/`,
 and copying a retention-managed store daily only creates churn and no restore value.

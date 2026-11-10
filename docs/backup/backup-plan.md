@@ -132,7 +132,7 @@ The result is a **daily per-service mirror** to a local staging directory, follo
   `rclone sync` with `--delete` propagates deletions and corruption from Catafalco to Julia. There is no version history, no retention, and no encryption. If a config is deleted or a database is corrupted at the source, the good copy is overwritten. Julia snapshots may mitigate this, but that is not part of this repository’s design and is not verified.
   > **Partially mitigated (`6558403`).** Every `rclone sync` now carries `--max-delete`
   > (`rclone_max_delete`, default 100), so a mass deletion aborts the run — and the missed
-  > Healthchecks ping — instead of propagating. Version history on the julia side is still the
+  > Healthchecks ping — instead of propagating. A temporary, revocable override is described in §12. Version history on the julia side is still the
   > real answer (B-09/B-12).
 
 - **B-P1-2: Staging is on the same failure domain as the source.**
@@ -395,3 +395,66 @@ Use the MCP remote-server tools for live checks where possible; do not rely on a
 - [ ] The Invidious DB survives a container recreate.
 - [ ] The restore role no longer uses `delete: true` against `/srv`.
 - [ ] The vault password, restic password, and Duplicati passphrase are escrowed.
+
+---
+
+## 12. Intentional mass deletions and the rclone deletion cap
+
+Every `rclone sync` job runs with `--max-delete` (`rclone_max_delete`, default 100). When a
+normal cleanup removes more than that many entries at the source, the job aborts: rclone has
+already deleted up to the cap by then, exits with a fatal error, and sends no Healthchecks
+success ping, so it appears as a missed ping. That is the intended tripwire; the three ways to
+clean up downstream follow, in order of preference.
+
+### 12.1 Delete on the destination too (no cap change)
+
+The sync only deletes what exists at the destination and not at the source. Delete the same
+subtree on julia while you delete it on catafalco, and the next run has nothing to delete, so
+the cap is never involved. This is the pattern used for the one-off InfluxDB store removal in
+[`docs/storage-review.md`](../storage-review.md) §9.
+
+```bash
+# review first, then apply, on the julia side (same lock as the cron jobs)
+sudo -u funkysloth /usr/bin/flock /run/lock/storage-maintenance.lock \
+  /usr/local/bin/rclone --config /srv/rclone/rclone.conf delete \
+  julia:media-catafalco/<path> --dry-run
+sudo -u funkysloth /usr/bin/flock /run/lock/storage-maintenance.lock \
+  /usr/local/bin/rclone --config /srv/rclone/rclone.conf delete \
+  julia:media-catafalco/<path>
+```
+
+Then confirm the mirror agrees (no `Deleting` lines in the report):
+
+```bash
+sudo -u funkysloth /usr/bin/flock /run/lock/storage-maintenance.lock \
+  /usr/local/bin/rclone --config /srv/rclone/rclone.conf sync \
+  /mnt/storage/Media julia:media-catafalco \
+  --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**' \
+  --exclude '/Transcodes/**' --exclude '/Books/**' --dry-run
+```
+
+### 12.2 Raise the cap for one run, then revoke it
+
+```bash
+echo 100000 | sudo tee /etc/rclone-max-delete     # raise (applies to all rclone jobs)
+sudo rm /etc/rclone-max-delete                    # revoke
+```
+
+The value is read by the cron job at run time through `/usr/local/bin/rclone-delete-cap`, so
+neither a playbook run nor a crontab edit is needed: raise it, run the job (wait for the
+schedule or run the command from `crontab -l`), confirm with the `--dry-run` check above that
+nothing is left to delete, then remove the file. A malformed value is ignored with a message on
+stderr and the managed default applies, so a typo cannot turn into an unlimited cap. `-1` is
+valid and means unlimited; use it only deliberately.
+
+The override is intentionally not an Ansible variable: raising the cap should not require a
+deploy, and a raised value must not be able to linger in the repository where the next deploy
+would restore it silently. The file is the single place to look.
+
+### 12.3 Change the permanent cap
+
+Edit `rclone_max_delete` in `roles/rclone/defaults/main.yml` and deploy with
+`ansible-playbook catafalco.yml -K --tags rclone`. Keep it well below the size of a realistic
+accident — a mass deletion is thousands to hundreds of thousands of entries. 100 catches the
+catastrophic case and is expected to be tripped occasionally; that is why 12.1 and 12.2 exist,
+not a reason to raise it.
