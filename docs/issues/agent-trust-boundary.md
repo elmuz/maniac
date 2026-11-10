@@ -1,6 +1,7 @@
 # Agent trust boundary and MCP privilege scope — assessment & TODO
 
-**Status:** OPEN · **Last updated:** 2026-11-04 21:30 CET
+**Status:** OPEN · **Last updated:** 2026-11-05 CET (re-assessed against `server-mcp` 0.5.0 and
+`pi-sandbox` 1.5.0; see [Re-assessment](#re-assessment-2026-11-05--ideal-containerized-mcp--sandbox))
 **Hosts:** laptop (`alessio`, UID 1000) and `catafalco` (`192.168.178.3`)
 **Track:** **S** — new. The **T-01 … T-21** disk/MCP track is closed (git history `8f348cf`).
 **Scope:** the `pi` harness and its sandbox (including the workspace mount, S-19/S-20),
@@ -70,6 +71,129 @@ the live tree read-write is a legitimate per-threat-model relaxation, not a safe
 **Standing rule for this track:** a control is only a control if the agent cannot
 read, write or bypass its enforcement point. Anything owned by UID 1000 on the laptop is
 inside the agent's trust domain.
+
+---
+
+## Re-assessment 2026-11-05 — ideal containerized MCP + sandbox
+
+The findings below were written before the two supporting repositories caught up. This
+section re-evaluates each one against the architecture that actually exists today and marks
+which findings survive, which are neutralised by the split, and what is genuinely left.
+
+### Inputs and verified live state
+
+- **`server-mcp` v0.5.0** (signed 2026-11-03): one image, both servers, read-only container,
+  Quadlet units, `pi-control` (internal) + `mcp-egress`, bearer token, `--check-config`, and
+  the 0.5.0 redaction/dump-refusal fixes (`fa0cbd1`, `174860b`, `56ef2b0`).
+- **`pi-sandbox` 1.5.0**: rootless Podman, non-root UID, `userns=keep-id`, read-only rootfs,
+  `cap-drop=ALL`, `no-new-privileges`, resource limits, no socket, no host home, workspace
+  **default `none`**, egress deny-by-default with a non-public baseline block, per-session
+  tmpfs auth, opt-in GitHub/GPG/clipboard capabilities (`4cedabe`).
+- **Live host (verified 2026-11-05):** `mcp-remote` and `mcp-disk` are `Up (healthy)` under
+  `server-mcp.target`, with `read_only`, `cap-drop=ALL`, no host port, only the audit dir
+  writable; `pi-egress-proxy` is running.
+- **This session is host-level, not sandboxed:** no container markers, UID 1000, `ansible`,
+  `~/.ssh`, `~/.config/server-mcp`, `~/.config/ansible/vault-iac.gpg` and
+  `SSH_AUTH_SOCK` are all reachable. So the *old* findings describe the current session
+  exactly; the new architecture only applies once a session is launched through
+  `pi-sandbox`.
+
+Two modes must therefore be evaluated:
+
+- **Mode A — host-level `pi` (today):** the container split does not protect anything,
+  because the agent is already on the privileged side. S-01/S-04/S-06/S-05 stay fully live.
+- **Mode B — `pi-sandbox` + containerized MCP (the ideal combination):** the author has no
+  host credentials, no socket and no LAN route; the MCP is the only control plane.
+
+### Status of S-01 … S-20 under Mode B
+
+| Finding | Mode B status | Evidence / remaining work |
+|---|---|---|
+| **S-01** agent holds the credentials | **Mitigated by design, not in effect today** | Sandbox image has no `ansible`, no `openssh-client`, no Docker/Podman CLI; home is a volume; `~/.ssh` is not mounted; non-public destinations are baseline-blocked by the egress proxy even with `default allow`. Remaining: actually run sessions through `pi-sandbox` (see N-03). |
+| **S-02** `funkysloth` root-equivalent via `docker` | **Open (target host)** | Unchanged in the repo: `roles/docker/tasks/main.yml:36-40` still appends `ansible_user` to `docker`, and `hosts` still sets `ansible_user: funkysloth`. The MCP's SSH key is therefore root on `catafalco`; the container split limits *who* can use it, not *what* it is. |
+| **S-03** vault unlocked | **Mechanism mitigated; content rotation + guards open** | `~/.vault_pass` and `.vaults` are gone; the password is `~/.config/ansible/vault-iac.gpg` (0600) and the reader is root-owned. In Mode B the blob is not mounted, so the sandbox cannot decrypt it; the host GPG signing socket can only be used on ciphertext the sandbox already has. Still open: rotate every vault content (Appendix D) and add the pre-commit secret guards. |
+| **S-04** Ansible is a root executor | **Mitigated in Mode B; open in Mode A** | Not installed in the sandbox image. The capability gap is S-17, not the credential. |
+| **S-05** MCP policy writable by the agent | **Mitigated in Mode B; open in Mode A** | Code runs from the image, config/key/token are read-only mounts, and the sandbox cannot reach `~/.config/server-mcp` or restart the user units. Caveat: the installed unit still uses the mutable `localhost/server-mcp:dev` tag (N-02). |
+| **S-06** unencrypted SSH keys + live agent | **Mitigated in Mode B; open in Mode A** | `~/.ssh` and the SSH agent socket are not mounted; the forwarded GPG extra socket is signing-only and only with `PI_SANDBOX_GPG_SIGN=1`. Keys are still passphrase-less on the host. |
+| **S-07** telegraf is root-equivalent | **Open (target host)** | Unchanged: `roles/telegraf/tasks/main.yml:203` adds `docker`; `:225` grants the whole `nvme` binary. Nothing in the MCP/sandbox work touches this. |
+| **S-08** redaction gaps | **Fixed** | `redact_secrets()` now wraps log search (`server.py:1484`), container health (`:932`, `:962`) and `systemctl`/`journalctl` output (`:662`, `:718`). Close it. |
+| **S-09** `get_service_file` reads any file | **Partially fixed** | Dumps/archives are now refused (`BLOCKED_PATH_SUFFIXES` includes `.sql`, `.dump`, `.tar`, `.gz`, `.zip`, `.sqlite`, …). There is still no per-service allowlist; any other readable file below `/srv/<service>/` is returned with heuristic redaction. Lower severity. |
+| **S-10** InfluxDB token | **Open upstream; readability mitigated** | InfluxDB 3 Core (3.12.1) still has no read-only tokens (`modernization-plan.md` 3.5), so the MCP holds an admin token. In Mode B the `.env` is not readable by the agent, but a compromised MCP can still write/delete metrics. |
+| **S-11** SSH hardening not applied | **Open (target host)** | Unchanged: `geerlingguy.security` is in `requirements.yml` but not in `catafalco.yml`; no role writes `sshd_config`; `security_ssh_port: 69` is dead config. |
+| **S-12** `confirm=true` is not human approval | **Open** | The MCP token is necessarily in the sandbox environment, so a prompt-injected model can call destructive tools within the rate limit. No `permission-gate` extension is installed in `~/.pi/agent/extensions`; the tool annotations exist but nothing consumes them. |
+| **S-13** audit log local and agent-writable | **Mitigated in Mode B; design gap open** | The audit dir is the only writable mount and the sandbox cannot reach the host path. There is still no remote append-only sink or hash chain, so a host-level actor or the MCP container can rewrite it. |
+| **S-14** lexical `ls`/`test` paths | **Open (upstream, Low)** | `_path_below_services()` is still lexical (`security.py:1303-1309`); tests: content reads use SFTP `realpath`, listings do not. |
+| **S-15** `echo` in the allowlist | **Open (upstream, Low)** | Still present in `ALLOWED_ARGV_PREFIXES` and `ECHO_CONNECTION`. |
+| **S-16** docs describe a different deployment | **Mostly fixed** | `server-mcp/docs/security-model.md` and `container.md` now scope the controls correctly, document the container split and the residual risks, and no longer claim blanket sudo. The catafalco facts (docker group, no sshd role) are not stated there yet; they live here. Close after adding the two facts. |
+| **S-17** no deploy path for a sandboxed agent | **Open — the blocker** | No deployer/approval boundary exists in either repo (`modernization-plan.md` 3.8 Phase 4 is unchecked; `pi-sandbox` deliberately has no Ansible). This is why the current session is host-level. Until it lands, Mode B cannot do the primary task class. |
+| **S-18** Ansible output is a secret channel | **Open, latent** | Only reachable once S-17 exists; the redaction requirement (`no_log`, structured callback, no `--diff`) must be designed into the deployer from the start. |
+| **S-19** RW bind of the live tree | **Default now safe; personal config opts in** | `PI_SANDBOX_WORKSPACE_MODE` defaults to `none`; `ro`/`rw` are explicit. `~/.config/pi-sandbox/config` sets `rw`, so the personal setup still accepts this risk (D10). The docs state the limitation. |
+| **S-20** live credentials in the sandbox | **Accepted, now explicit opt-ins** | Provider auth is still seeded by design; GitHub, GPG signing and clipboard are off by default and enabled in the personal config. Add the clipboard channel (N-04) to the list. |
+
+### New findings from the combined architecture
+
+- **N-01 — Mode A is still the default in practice.** Every container control is bypassed
+  when `pi` runs on the host. The assessment must not be read as "mostly fixed": for the
+  session that produced this document, S-01/S-04/S-05/S-06 are live and S-03's ciphertext is
+  readable (pinentry-gated). Decide per session which mode is in use and record it.
+- **N-02 — The MCP runs from a mutable local image tag.** The installed Quadlet unit uses
+  `Image=localhost/server-mcp:dev`, not the published GHCR digest, and the unit, config and
+  token are owned by UID 1000. In Mode A the agent can rebuild the image or edit the unit and
+  `systemctl --user restart server-mcp.target`; in Mode B it cannot. Pin the digest and move
+  the units/config to a path the agent cannot write (a system service, or a dedicated user).
+- **N-03 — The personal sandbox profile enables every relaxation.** `~/.config/pi-sandbox/config`
+  sets `PI_SANDBOX_WORKSPACE_MODE=rw`, `PI_SANDBOX_GH_TOKEN=1`, `PI_SANDBOX_GPG_SIGN=1`,
+  `PI_SANDBOX_CLIPBOARD=1`, `PI_SANDBOX_WARN=0`, and the egress policy ends in
+  `default allow`. Each is documented, but a future audit will re-derive them; keep this table
+  as the record. `default allow` only affects **public** destinations: the non-public baseline
+  still blocks the LAN, so it is not an MCP bypass.
+- **N-04 — Clipboard forwarding is a data channel.** `wl-clipboard` plus the host Wayland
+  socket lets the sandbox read (and potentially write) the host clipboard, which is a common
+  place for passwords and tokens. It is opt-in but enabled in the personal profile; treat it
+  as a secret source, not a convenience.
+- **N-05 — The MCP has unfiltered egress.** `mcp-egress` is a normal bridge, not an allowlist.
+  The trust-domain section says "egress only to the configured target and metric endpoints",
+  but the implementation only controls *what the tools do*, not where the container can
+  connect. A compromised MCP image could reach any LAN host or Internet endpoint. Consider a
+  firewall/egress proxy for the MCP container, or state the gap explicitly.
+- **N-06 — The sandbox holds the destructive MCP token by design.** The token must be in the
+  environment for the control plane to work, so S-12's human-approval gap is the only thing
+  between a prompt-injected model and restart/stop/`compose down`. The tool annotations and
+  rate limit reduce accidents, not intent. Install a `permission-gate` for
+  `destructiveHint` tools, or split read-only and admin servers with separate tokens.
+- **N-07 — The audit log has no off-box copy.** Even in Mode B the MCP writes to a host bind
+  mount under the operator's home. Deleting or rotating it is outside the sandbox, but a
+  compromised MCP or host-level session still erases the record (S-13). Add a remote sink or
+  a signed digest before treating it as accountability.
+- **N-08 — The docs and the deployment disagree on the MCP image and user.**
+  `container.md` says to pin the digest and implies a dedicated user; the live unit runs
+  `localhost/server-mcp:dev` as UID 1000. This is the same class as S-16: a control described
+  in documentation but not applied on the host.
+
+### What the split actually solves
+
+When the agent is genuinely inside `pi-sandbox` and the MCP is the containerized stack, the
+following old findings stop being attack paths rather than "mitigated by policy": S-08 is
+fixed in code; S-01/S-04/S-06 are removed by the absence of the credentials and tools;
+S-05/S-13 are removed by the filesystem/process boundary; S-09/S-14/S-15 are bounded
+upstream gaps that remain but are no longer reachable from a host shell; S-19/S-20 are
+reduced to explicit, documented relaxations. The findings that are **not** touched by the
+split are the target-host ones (S-02, S-07, S-11), the upstream ones (S-10, S-14, S-15), and
+the architectural missing piece (S-17/S-18).
+
+### Revised priority
+
+1. **Use the mode you think you are in.** If a session needs host credentials, say so; do not
+   present the container controls as active. If it does not, launch `pi-sandbox` with the
+   default profile and no `rw` mount.
+2. **S-17/S-18 (deploy plane).** This is the only item that removes the reason to run Mode A.
+   Design it with redaction from the first commit.
+3. **S-02/S-07/S-11 (target host).** These are unchanged by all the container work and keep
+   the MCP key root-equivalent.
+4. **S-03 content rotation + pre-commit guards.** Rekeying only protects the future.
+5. **N-02/N-08 (pin the image, own the units), S-12/N-06 (approval gate), S-10 (admin token),
+   S-13/N-07 (audit sink).**
+6. **S-09/S-14/S-15 and N-05** are the remaining upstream/polish items.
 
 ---
 
@@ -226,6 +350,10 @@ budget stops a looping or injected agent.
 ---
 
 ## Findings
+
+> **Status baseline:** the per-finding status lines below are the 2026-11-03/04 snapshot.
+> The [Re-assessment](#re-assessment-2026-11-05--ideal-containerized-mcp--sandbox) above
+> supersedes them where the containerized MCP and `pi-sandbox` change the answer.
 
 ### S-01 — The agent runs with the credentials it is meant to be constrained from
 
@@ -1087,6 +1215,9 @@ rotated, document the compensating control and the expiry date.
 ## Related documents
 
 - `AGENTS.md` — deployment invariants and the standing rule for disk identity (T-09/T-10).
+- [deployer-service.md](deployer-service.md) — design review of the deployer service and the
+  L0–L3 autonomy ladder; amends Phase 1.5 (commit addressing, evidence contract, approval
+  token, staging).
 - `server-mcp/docs/security-model.md` — the MCP's own model; needs the S-16 correction.
 - `server-mcp/SECURITY.md` — reporting scope and safe defaults.
 - Retired `docs/disk-and-mcp-assessment.md` — T-01 … T-21, in git history (`8f348cf`).

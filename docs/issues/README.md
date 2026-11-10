@@ -6,6 +6,7 @@ place; do not open a second findings file for the same subject.
 | Track | Status | Document |
 |---|---|---|
 | **S** — Agent trust boundary and MCP privilege scope | OPEN | [agent-trust-boundary.md](agent-trust-boundary.md) |
+| **S** — Deployer service and autonomy ladder (design review) | PROPOSAL | [deployer-service.md](deployer-service.md) |
 | **I** — Invidious livestreams never start (upstream) | OPEN — upstream | [invidious-livestreams.md](invidious-livestreams.md) |
 
 The retired **T-01 … T-21** disk identity / MCP tooling track is closed. Its full history
