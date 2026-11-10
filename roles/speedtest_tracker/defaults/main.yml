@@ -8,3 +8,4 @@ speedtest_tracker_homer:
   name: "{{ speedtest_tracker_dashboard_name }}"
   category: services
   type: SpeedtestTracker
+  updateIntervalMs: 60000
