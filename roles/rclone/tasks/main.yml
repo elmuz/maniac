@@ -4,6 +4,18 @@
 # 3. Prepare config
 # 4. Add crontab activities
 
+# The cron jobs ask this helper for the effective --max-delete value instead of
+# hard-coding it, so an operator can raise the cap for one cleanup by writing a
+# file and revoke it by deleting that file, without a playbook run and without
+# a raised cap lingering in a template.
+- name: Deploy the rclone deletion-cap helper
+  ansible.builtin.copy:
+    src: rclone-delete-cap
+    dest: /usr/local/bin/rclone-delete-cap
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install rclone
   ansible.builtin.include_role:
     name: stefangweichinger.ansible_rclone
@@ -23,7 +35,7 @@
       /usr/bin/flock {{ storage_maintenance_lock_file }} /bin/sh -c
       '/usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }} &&
-      /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**' --max-delete {{ rclone_max_delete }}
+      /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**' --max-delete "$(/usr/local/bin/rclone-delete-cap {{ rclone_max_delete }} {{ rclone_max_delete_override_file }})"
       --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}'
   with_items:
@@ -64,7 +76,7 @@
       '/usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }} &&
       /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**'
-      --exclude '/Transcodes/**' --exclude '/Books/**' --max-delete {{ rclone_max_delete }} --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
+      --exclude '/Transcodes/**' --exclude '/Books/**' --max-delete "$(/usr/local/bin/rclone-delete-cap {{ rclone_max_delete }} {{ rclone_max_delete_override_file }})" --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}'
   with_items:
     - src: "{{ mergerfs_root }}/Media"
@@ -85,7 +97,7 @@
       /usr/bin/flock {{ storage_maintenance_lock_file }} /bin/sh -c
       '/usr/local/sbin/storage-preflight --source {{ item.preflight_path }} --healthchecks-url
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }} &&
-      /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**' --max-delete {{ rclone_max_delete }}
+      /usr/local/bin/rclone --config {{ rclone_config_location }} sync {{ item.src }} {{ item.dst }} --exclude '@Recently-Snapshot/**' --exclude '@Recycle/**' --max-delete "$(/usr/local/bin/rclone-delete-cap {{ rclone_max_delete }} {{ rclone_max_delete_override_file }})"
       --syslog --log-level NOTICE --syslog-facility SYSLOG && curl -fsS -m 10 --retry 5 -o /dev/null
       https://healthchecks.{{ host_local }}/ping/{{ item.hc_uuid }}'
   with_items:

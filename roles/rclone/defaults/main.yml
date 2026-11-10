@@ -10,3 +10,13 @@
 # reviewing a --dry-run; versioning on the julia side (snapshots, restic) is
 # the longer-term answer, not a larger cap.
 rclone_max_delete: 100
+
+# Operator override for the cap, read at job runtime. Write an integer to this
+# file to raise the cap for a cleanup, then delete the file to restore the
+# managed value:
+#   echo 100000 | sudo tee /etc/rclone-max-delete
+#   sudo rm /etc/rclone-max-delete
+# It applies to every rclone job until removed; see the runbook in
+# docs/backup/backup-plan.md. An invalid value falls back to rclone_max_delete
+# with a message on stderr.
+rclone_max_delete_override_file: /etc/rclone-max-delete

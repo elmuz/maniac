@@ -1,0 +1,49 @@
+#!/bin/sh
+# Print the --max-delete value an rclone job should use.
+#
+#   rclone-delete-cap DEFAULT [FILE]
+#
+# DEFAULT is the Ansible-managed cap (rclone_max_delete). FILE is an operator
+# override: when it exists and its first line is an integer, that value is
+# used instead. Deleting FILE restores the managed default, so a temporary
+# raise for an intentional cleanup cannot be forgotten in the repository.
+#
+# The override is deliberately a file and not an Ansible variable: raising the
+# cap must not require a playbook run, and it must be impossible to leave a
+# raised cap behind in a template that the next deploy silently restores.
+#
+# Anything that is not an integer is ignored, with a message on stderr, so a
+# typo cannot turn into "no limit". `-1` is integer-shaped and means unlimited
+# in rclone; that is the documented escape hatch, not a typo.
+set -u
+
+default=${1:?usage: rclone-delete-cap DEFAULT [FILE]}
+file=${2:-/etc/rclone-max-delete}
+
+cap=""
+if [ -e "$file" ]; then
+    if [ -r "$file" ]; then
+        # First line only, without surrounding whitespace: a trailing newline
+        # or a comment-free single value is what this file is for.
+        cap=$(head -n 1 "$file" 2>/dev/null | tr -d '[:space:]')
+    else
+        echo "rclone-delete-cap: $file is not readable; using $default" >&2
+    fi
+fi
+
+# Strict: optional leading "-" followed by digits only. Anything else is a
+# typo, and a typo must not become a silently larger (or unlimited) cap.
+digits=$cap
+case $cap in
+    -*) digits=${cap#-} ;;
+esac
+case $digits in
+    '' | *[!0-9]*)
+        if [ -n "$cap" ]; then
+            echo "rclone-delete-cap: ignoring invalid value '$cap' in $file; using $default" >&2
+        fi
+        cap=$default
+        ;;
+esac
+
+printf '%s\n' "$cap"
