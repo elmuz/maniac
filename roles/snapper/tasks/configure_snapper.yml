@@ -73,7 +73,7 @@
 
         - name: Retry creating Snapper configuration for failed configs
           ansible.builtin.command:
-            cmd: snapper -c data{{ '%02d' % item }} create-config -t default {{ mounts_root_location }}/data{{ snapraid_data_disks[item - 1].data_disk_id }} }}
+            cmd: snapper -c data{{ '%02d' % item }} create-config -t default {{ mounts_root_location }}/data{{ snapraid_data_disks[item - 1].data_disk_id }}
           loop: "{{ range(1, snapraid_data_disks | length + 1) | list }}"
           when:
             - not snapper_config_validity.results[item-1].ansible_facts.snapper_config_valid
@@ -112,13 +112,36 @@
       ignore_errors: true
       check_mode: false
 
+    # A freshly replaced data disk has no `.snapshots` subvolume at all, and
+    # snapraid-btrfs reports that with the same "is not a valid btrfs
+    # subvolume" wording it uses for real damage. Treating the two the same
+    # made the rescue path below delete every data disk's snapshots and every
+    # snapper config - on the healthy disk too - during a disk replacement.
+    # Only an existing path that is NOT a subvolume is a genuine fault.
+    - name: Find .snapshots paths that exist but are not btrfs subvolumes
+      ansible.builtin.shell: |
+        set -u
+        for id in {{ snapraid_data_disks | map(attribute='data_disk_id') | join(' ') }}; do
+          path="{{ mounts_root_location }}/data${id}/.snapshots"
+          if [ -e "$path" ] && ! btrfs subvolume show "$path" >/dev/null 2>&1; then
+            echo "$id"
+          fi
+        done
+      register: snapper_broken_snapshots
+      changed_when: false
+      check_mode: false
+
     - name: Check for invalid btrfs subvolume
       ansible.builtin.set_fact:
-        snapper_invalid_subvolume: "{{ 'is not a valid btrfs subvolume' in snapper_snapraid_btrfs_output.stderr }}"
+        snapper_invalid_subvolume: "{{ snapper_broken_snapshots.stdout | trim | length > 0 }}"
 
     - name: Display snapraid-btrfs output
       ansible.builtin.debug:
         var: snapper_snapraid_btrfs_output.stdout_lines
+
+    - name: Display the data disks whose .snapshots is not a subvolume
+      ansible.builtin.debug:
+        var: snapper_broken_snapshots.stdout_lines
 
     - name: Fail if invalid subvolume detected
       ansible.builtin.fail:
@@ -128,6 +151,20 @@
   rescue:
     - name: Reset Snapper configurations
       block:
+        # Scope the reset to the damaged disks so a fault on one disk cannot
+        # destroy the healthy disks' snapshots and configs.
+        - name: Reset every data disk when the damaged set is unknown
+          ansible.builtin.set_fact:
+            snapper_reset_ids: "{{ snapraid_data_disks | map(attribute='data_disk_id') | list }}"
+          when: (snapper_broken_snapshots.stdout | default('') | trim | length) == 0
+
+        - name: Reset only the damaged data disks
+          ansible.builtin.set_fact:
+            snapper_reset_ids: >-
+              {{ snapper_broken_snapshots.stdout_lines | default([]) | map('trim')
+                 | reject('equalto', '') | map('int') | list }}
+          when: (snapper_broken_snapshots.stdout | default('') | trim | length) > 0
+
         - name: Clear SNAPPER_CONFIGS
           ansible.builtin.lineinfile:
             path: "{{ item }}"
@@ -140,15 +177,15 @@
 
         - name: Remove individual snapper configs
           ansible.builtin.file:
-            path: "/etc/snapper/configs/data{{ '%02d' % item.data_disk_id }}"
+            path: "/etc/snapper/configs/data{{ '%02d' % item }}"
             state: absent
-          loop: "{{ snapraid_data_disks }}"
+          loop: "{{ snapper_reset_ids }}"
 
         - name: Get list of snapshots for each data disk
           ansible.builtin.find:
-            paths: "{{ mounts_root_location }}/data{{ item.data_disk_id }}/.snapshots"
+            paths: "{{ mounts_root_location }}/data{{ item }}/.snapshots"
             file_type: directory
-          loop: "{{ snapraid_data_disks }}"
+          loop: "{{ snapper_reset_ids }}"
           register: snapper_snapshot_dirs
           ignore_errors: true
 
@@ -159,16 +196,16 @@
           when: snapper_snapshot_dirs.results is defined
           ignore_errors: true
 
-        - name: Remove .snapshots subvolume on all disks # noqa command-instead-of-module
+        - name: Remove .snapshots subvolume on the damaged disks # noqa command-instead-of-module
           ansible.builtin.command:
-            cmd: "btrfs subvolume delete -C {{ mounts_root_location }}/data{{ item.data_disk_id }}/.snapshots"
-          loop: "{{ snapraid_data_disks }}"
+            cmd: "btrfs subvolume delete -C {{ mounts_root_location }}/data{{ item }}/.snapshots"
+          loop: "{{ snapper_reset_ids }}"
           ignore_errors: true
 
         - name: Recreate all snapper configs
           ansible.builtin.command:
-            cmd: "snapper -c data{{ '%02d' % item }} create-config -t default {{ mounts_root_location }}/data{{ item.data_disk_id }}"
-          loop: "{{ snapraid_data_disks }}"
+            cmd: "snapper -c data{{ '%02d' % item }} create-config -t default {{ mounts_root_location }}/data{{ item }}"
+          loop: "{{ snapper_reset_ids }}"
           register: snapper_create_config_result
           failed_when:
             - snapper_create_config_result.rc != 0
