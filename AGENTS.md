@@ -322,6 +322,15 @@ own stores (e.g. the InfluxDB `db/`): an unmounted pool looks like a writable di
 and copying a retention-managed store daily only creates churn and no restore value.
 - **Do not "fix" a failing preflight by removing the call.** A missing guard script shows up as a
 failing job; that is the intended failure mode, not a regression.
+- **Replacing a data disk is a read-only window, and `snapraid check` needs one too.** `snapraid
+fix` does not take `storage_maintenance_lock_file`, so the scheduled jobs must be stopped *and
+disabled* (a reboot re-arms Docker, Samba and the runner timer) for the whole rebuild; the same
+applies to `check`, which compares data against the content hashes and therefore reports every
+file moved or rewritten since the last `sync` as a data error — per *block*, so a few hundred
+changed files look like thousands of errors. Order is `diff` → `sync` → `check`, options before
+the command (`snapraid -d d2 fix`), and `-d` does not shorten `check`. `snapraid fix` restores
+content only: replay the `%u:%g %m` baseline with `scripts/replay-fs-perms.py` before starting
+Docker. Procedure and measured timings: [`docs/storage/disk-replacement.md`](docs/storage/disk-replacement.md).
 
 ---
 
